@@ -1393,7 +1393,7 @@ static void utc_timestring(const struct timeabs *time, char str[UTC_TIMELEN])
 	/* Start by formatting the date and time */
 	size_t len = strftime(iso8601_fmt, UTC_TIMELEN, "%Y-%m-%dT%H:%M:%S",
 			      gmtime(&time->ts.tv_sec));
-	assert(len == UTC_TIMELEN - 1;
+	assert(len == UTC_TIMELEN - 1);
 	/* Now complete it by adding the milliseconds and the Zulu
 	 * identifier */
 	snprintf(str, UTC_TIMELEN, "%19s.%03dZ", iso8601_fmt,
