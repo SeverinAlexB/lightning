@@ -1382,14 +1382,20 @@ static struct command_result *json_pay(struct command *cmd,
 }
 
 /* FIXME: Add this to ccan/time? */
-#define UTC_TIMELEN (sizeof("YYYY-mm-ddTHH:MM:SS.nnnZ"))
+/* The buffer size we need to serialize a UTC formatted string:
+ * `strlen("YYYY-mm-ddTHH:MM:SS.nnnZ") == 24 + 1` */
+#define UTC_TIMELEN 25
 static void utc_timestring(const struct timeabs *time, char str[UTC_TIMELEN])
 {
-	char iso8601_msec_fmt[sizeof("YYYY-mm-ddTHH:MM:SS.%03dZ")];
-
-	strftime(iso8601_msec_fmt, sizeof(iso8601_msec_fmt), "%FT%T.%%03dZ",
+	/* No need to be stingy with extra buffer space, so use what
+	 * we know is sufficient overall. */
+	char iso8601_fmt[UTC_TIMELEN];
+	/* Start by formatting the date and time */
+	strftime(iso8601_fmt, UTC_TIMELEN, "%FT%T",
 		 gmtime(&time->ts.tv_sec));
-	snprintf(str, UTC_TIMELEN, iso8601_msec_fmt,
+	/* Now complete it by adding the milliseconds and the Zulu
+	 * identifier */
+	snprintf(str, UTC_TIMELEN, "%s.%03dZ", iso8601_fmt,
 		 (int) time->ts.tv_nsec / 1000000);
 }
 
