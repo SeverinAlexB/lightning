@@ -1391,13 +1391,13 @@ static void utc_timestring(const struct timeabs *time, char str[UTC_TIMELEN])
 	 * we know is sufficient overall. */
 	char iso8601_fmt[UTC_TIMELEN];
 	/* Start by formatting the date and time */
-	size_t len = strftime(iso8601_fmt, UTC_TIMELEN, "%Y-%m-%dT%H:%M:%S",
-			      gmtime(&time->ts.tv_sec));
-	assert(len == UTC_TIMELEN - 1);
+	strftime(iso8601_fmt, UTC_TIMELEN, "%Y-%m-%dT%H:%M:%S",
+		 gmtime(&time->ts.tv_sec));
 	/* Now complete it by adding the milliseconds and the Zulu
 	 * identifier */
-	snprintf(str, UTC_TIMELEN, "%19s.%03dZ", iso8601_fmt,
-		 (int) time->ts.tv_nsec / 1000000);
+	size_t len = snprintf(str, UTC_TIMELEN, "%19s.%03dZ", iso8601_fmt,
+			      (int)time->ts.tv_nsec / 1000000);
+	assert(len == UTC_TIMELEN - 1);
 }
 
 static void add_attempt(struct json_stream *ret,
