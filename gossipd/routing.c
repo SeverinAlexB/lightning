@@ -33,9 +33,11 @@ struct pending_node_announce {
 };
 
 /* We consider a reasonable gossip rate to be 1 per day, with burst of
- * 4 per day.  So we use a granularity of one hour. */
+ * 4 per day.  So we use a granularity of one hour. 
+ Severin: Burst increased to 10 for LnRouter to make the gossip more reliable.
+ */
 #define TOKENS_PER_MSG 24
-#define TOKEN_MAX (24 * 4)
+#define TOKEN_MAX (24 * 10)  // #define TOKEN_MAX (24 * 4)
 
 static u8 update_tokens(const struct routing_state *rstate,
 			u8 tokens, u32 prev_timestamp, u32 new_timestamp)
