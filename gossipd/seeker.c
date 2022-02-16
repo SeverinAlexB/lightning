@@ -73,7 +73,9 @@ struct seeker {
 	 * missing channels. */
 	bool unknown_nodes;
 
-	/* Peers we've asked to stream us gossip */
+	/* Peers we've asked to stream us gossip 
+	Severin: Gossip stream peers increased from 5 to 20 to receive the gossip faster.
+	*/
 	struct peer *gossiper_softref[20];
 
 	/* A peer that told us about unknown gossip. */
