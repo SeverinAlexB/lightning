@@ -1,4 +1,5 @@
 /* Routines to generate and handle gossip query messages */
+#include "config.h"
 #include <bitcoin/chainparams.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/asort/asort.h>
@@ -22,13 +23,18 @@ static u32 dev_max_encoding_bytes = -1U;
 /* BOLT #7:
  *
  * There are several messages which contain a long array of
- * `short_channel_id`s (called `encoded_short_ids`) so we utilize a
- * simple compression scheme: the first byte indicates the encoding, the
- * rest contains the data.
+ * `short_channel_id`s (called `encoded_short_ids`) so we include an encoding
+ *  byte which allows for different encoding schemes to be defined in the future
  */
-static u8 *encoding_start(const tal_t *ctx)
+static u8 *encoding_start(const tal_t *ctx, bool prepend_encoding)
 {
-	return tal_arr(ctx, u8, 0);
+	u8 *ret;
+	if (prepend_encoding) {
+		ret = tal_arr(ctx, u8, 1);
+		ret[0] = ARR_UNCOMPRESSED;
+	} else
+		ret = tal_arr(ctx, u8, 0);
+	return ret;
 }
 
 /* Marshal a single short_channel_id */
@@ -51,89 +57,13 @@ static void encoding_add_query_flag(u8 **encoded, bigsize_t flag)
 	towire_bigsize(encoded, flag);
 }
 
-/* Greg Maxwell asked me privately about using zlib for communicating a set,
- * and suggested that we'd be better off using Golomb-Rice coding a-la BIP
- * 158.  However, naively using Rice encoding isn't a win: we have to get
- * more complex and use separate streams.  The upside is that it's between
- * 2 and 5 times smaller (assuming optimal Rice encoding + gzip).  We can add
- * that later. */
-static u8 *zencode(const tal_t *ctx, const u8 *scids, size_t len)
+static bool encoding_end(const u8 *encoded, size_t max_bytes)
 {
-	u8 *z;
-	int err;
-	unsigned long compressed_len = len;
-
-#ifdef ZLIB_EVEN_IF_EXPANDS
-	/* Needed for test vectors */
-	compressed_len = 128 * 1024;
-#endif
-	/* Prefer to fail if zlib makes it larger */
-	z = tal_arr(ctx, u8, compressed_len);
-	err = compress2(z, &compressed_len, scids, len, Z_DEFAULT_COMPRESSION);
-	if (err == Z_OK) {
-		tal_resize(&z, compressed_len);
-		return z;
-	}
-	return NULL;
-}
-
-/* Try compressing *encoded: fails if result would be longer.
- * @off is offset to place result in *encoded.
- */
-static bool encoding_end_zlib(u8 **encoded, size_t off)
-{
-	u8 *z;
-	size_t len = tal_count(*encoded);
-
-	z = zencode(tmpctx, *encoded, len);
-	if (!z)
-		return false;
-
-	/* Successful: copy over and trim */
-	tal_resize(encoded, off + tal_count(z));
-	memcpy(*encoded + off, z, tal_count(z));
-
-	tal_free(z);
-	return true;
-}
-
-static void encoding_end_no_compress(u8 **encoded, size_t off)
-{
-	size_t len = tal_count(*encoded);
-
-	tal_resize(encoded, off + len);
-	memmove(*encoded + off, *encoded, len);
-}
-
-/* Once we've assembled it, try compressing.
- * Prepends encoding type to @encoding. */
-static bool encoding_end_prepend_type(u8 **encoded, size_t max_bytes)
-{
-	if (encoding_end_zlib(encoded, 1))
-		**encoded = ARR_ZLIB;
-	else {
-		encoding_end_no_compress(encoded, 1);
-		**encoded = ARR_UNCOMPRESSED;
-	}
-
 #if DEVELOPER
-	if (tal_count(*encoded) > dev_max_encoding_bytes)
+	if (tal_count(encoded) > dev_max_encoding_bytes)
 		return false;
 #endif
-	return tal_count(*encoded) <= max_bytes;
-}
-
-/* Try compressing, leaving type external */
-static bool encoding_end_external_type(u8 **encoded, u8 *type, size_t max_bytes)
-{
-	if (encoding_end_zlib(encoded, 0))
-		*type = ARR_ZLIB;
-	else {
-		encoding_end_no_compress(encoded, 0);
-		*type = ARR_UNCOMPRESSED;
-	}
-
-	return tal_count(*encoded) <= max_bytes;
+	return tal_count(encoded) <= max_bytes;
 }
 
 /* Query this peer for these short-channel-ids. */
@@ -179,20 +109,19 @@ bool query_short_channel_ids(struct daemon *daemon,
 	if (peer->scid_query_outstanding)
 		return false;
 
-	encoded = encoding_start(tmpctx);
+	encoded = encoding_start(tmpctx, true);
 	for (size_t i = 0; i < tal_count(scids); i++) {
 		/* BOLT #7:
 		 *
 		 * Encoding types:
 		 * * `0`: uncompressed array of `short_channel_id` types, in
 		 *   ascending order.
-		 * * `1`: array of `short_channel_id` types, in ascending order
 		 */
 		assert(i == 0 || scids[i].u64 > scids[i-1].u64);
 		encoding_add_short_channel_id(&encoded, &scids[i]);
 	}
 
-	if (!encoding_end_prepend_type(&encoded, max_encoded_bytes)) {
+	if (!encoding_end(encoded, max_encoded_bytes)) {
 		status_broken("query_short_channel_ids: %zu is too many",
 			      tal_count(scids));
 		return false;
@@ -203,15 +132,15 @@ bool query_short_channel_ids(struct daemon *daemon,
 		tlvs = tlv_query_short_channel_ids_tlvs_new(tmpctx);
 		tlvq = tlvs->query_flags = tal(tlvs,
 			   struct tlv_query_short_channel_ids_tlvs_query_flags);
- 		tlvq->encoded_query_flags = encoding_start(tlvq);
+		tlvq->encoding_type = ARR_UNCOMPRESSED;
+		tlvq->encoded_query_flags = encoding_start(tlvq, false);
 		for (size_t i = 0; i < tal_count(query_flags); i++)
 			encoding_add_query_flag(&tlvq->encoded_query_flags,
 						query_flags[i]);
 
 		max_encoded_bytes -= tal_bytelen(encoded);
-		if (!encoding_end_external_type(&tlvq->encoded_query_flags,
-						&tlvq->encoding_type,
-						max_encoded_bytes)) {
+		if (!encoding_end(tlvq->encoded_query_flags,
+				  max_encoded_bytes)) {
 			status_broken("query_short_channel_ids:"
 				      " %zu query_flags is too many",
 				      tal_count(query_flags));
@@ -241,11 +170,10 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	u8 *encoded;
 	struct short_channel_id *scids;
 	bigsize_t *flags;
-	struct tlv_query_short_channel_ids_tlvs *tlvs
-		= tlv_query_short_channel_ids_tlvs_new(tmpctx);
+	struct tlv_query_short_channel_ids_tlvs *tlvs;
 
 	if (!fromwire_query_short_channel_ids(tmpctx, msg, &chain, &encoded,
-					      tlvs)) {
+					      &tlvs)) {
 		return towire_warningfmt(peer, NULL,
 					 "Bad query_short_channel_ids w/tlvs %s",
 					 tal_hex(tmpctx, msg));
@@ -258,7 +186,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 		 *  - if the incoming message includes
 		 *    `query_short_channel_ids_tlvs`:
 		 *    - if `encoding_type` is not a known encoding type:
-		 *      - MAY fail the connection
+		 *      - MAY send a `warning`.
+		 *      - MAY close the connection.
 		 */
 		flags = decode_scid_query_flags(tmpctx, tlvs->query_flags);
 		if (!flags) {
@@ -288,7 +217,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	 * - if it has not sent `reply_short_channel_ids_end` to a
 	 *   previously received `query_short_channel_ids` from this
 	 *   sender:
-	 *    - MAY fail the connection.
+	 *    - MAY send a `warning`.
+	 *    - MAY close the connection.
 	 */
 	if (peer->scid_queries || peer->scid_query_nodes) {
 		return towire_warningfmt(peer, NULL,
@@ -308,7 +238,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	 *...
 	 *    - if `encoded_query_flags` does not decode to exactly one flag per
 	 *      `short_channel_id`:
-	 *      - MAY fail the connection.
+	 *     - MAY send a `warning`.
+	 *     - MAY close the connection.
 	 */
 	if (!flags) {
 		/* Pretend they asked for everything. */
@@ -334,8 +265,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	peer->scid_query_idx = 0;
 	peer->scid_query_nodes = tal_arr(peer, struct node_id, 0);
 
-	/* Notify the daemon_conn-write loop to invoke create_next_scid_reply */
-	daemon_conn_wake(peer->dc);
+	/* Notify the daemon_conn-write loop to invoke maybe_send_query_responses_peer */
+	daemon_conn_wake(peer->daemon->connectd);
 	return NULL;
 }
 
@@ -356,24 +287,24 @@ static void send_reply_channel_range(struct peer *peer,
 	 *   - MUST limit `number_of_blocks` to the maximum number of blocks
 	 *     whose results could fit in `encoded_short_ids`
 	 */
-	u8 *encoded_scids = encoding_start(tmpctx);
-	u8 *encoded_timestamps = encoding_start(tmpctx);
+	u8 *encoded_scids = encoding_start(tmpctx, true);
+	u8 *encoded_timestamps = encoding_start(tmpctx, false);
  	struct tlv_reply_channel_range_tlvs *tlvs
  		= tlv_reply_channel_range_tlvs_new(tmpctx);
 
 	/* Encode them all */
 	for (size_t i = 0; i < num_scids; i++)
 		encoding_add_short_channel_id(&encoded_scids, &scids[i]);
-	encoding_end_prepend_type(&encoded_scids, tal_bytelen(encoded_scids));
+	encoding_end(encoded_scids, tal_bytelen(encoded_scids));
 
 	if (tstamps) {
 		for (size_t i = 0; i < num_scids; i++)
 			encoding_add_timestamps(&encoded_timestamps, &tstamps[i]);
 
 		tlvs->timestamps_tlv = tal(tlvs, struct tlv_reply_channel_range_tlvs_timestamps_tlv);
-		encoding_end_external_type(&encoded_timestamps,
-					   &tlvs->timestamps_tlv->encoding_type,
-					   tal_bytelen(encoded_timestamps));
+		tlvs->timestamps_tlv->encoding_type = ARR_UNCOMPRESSED;
+		encoding_end(encoded_timestamps,
+			     tal_bytelen(encoded_timestamps));
 		tlvs->timestamps_tlv->encoded_timestamps
 			= tal_steal(tlvs, encoded_timestamps);
 	}
@@ -644,12 +575,11 @@ const u8 *handle_query_channel_range(struct peer *peer, const u8 *msg)
 	struct bitcoin_blkid chain_hash;
 	u32 first_blocknum, number_of_blocks;
 	enum query_option_flags query_option_flags;
-	struct tlv_query_channel_range_tlvs *tlvs
-		= tlv_query_channel_range_tlvs_new(msg);
+	struct tlv_query_channel_range_tlvs *tlvs;
 
-	if (!fromwire_query_channel_range(msg, &chain_hash,
+	if (!fromwire_query_channel_range(msg, msg, &chain_hash,
 					  &first_blocknum, &number_of_blocks,
-					  tlvs)) {
+					  &tlvs)) {
 		return towire_warningfmt(peer, NULL,
 					 "Bad query_channel_range w/tlvs %s",
 					 tal_hex(tmpctx, msg));
@@ -740,12 +670,11 @@ const u8 *handle_reply_channel_range(struct peer *peer, const u8 *msg)
 	void (*cb)(struct peer *peer,
 		   u32 first_blocknum, u32 number_of_blocks,
 		   const struct range_query_reply *replies);
-	struct tlv_reply_channel_range_tlvs *tlvs
-		= tlv_reply_channel_range_tlvs_new(tmpctx);
+	struct tlv_reply_channel_range_tlvs *tlvs;
 
 	if (!fromwire_reply_channel_range(tmpctx, msg, &chain, &first_blocknum,
 					  &number_of_blocks, &sync_complete,
-					  &encoded, tlvs)) {
+					  &encoded, &tlvs)) {
 		return towire_warningfmt(peer, NULL,
 					 "Bad reply_channel_range w/tlvs %s",
 					 tal_hex(tmpctx, msg));
@@ -984,7 +913,7 @@ static void uniquify_node_ids(struct node_id **ids)
 /* We are fairly careful to avoid the peer DoSing us with channel queries:
  * this routine sends information about a single short_channel_id, unless
  * it's finished all of them. */
-void maybe_send_query_responses(struct peer *peer)
+static bool maybe_send_query_responses_peer(struct peer *peer)
 {
 	struct routing_state *rstate = peer->daemon->rstate;
 	size_t i, num;
@@ -1118,15 +1047,31 @@ void maybe_send_query_responses(struct peer *peer)
 		peer->scid_query_nodes = tal_free(peer->scid_query_nodes);
 		peer->scid_query_nodes_idx = 0;
 	}
+	return sent;
+}
+
+void maybe_send_query_responses(struct daemon *daemon)
+{
+	/* Rotate through, so we don't favor a single peer. */
+	struct list_head used;
+	struct peer *p;
+
+	list_head_init(&used);
+	while ((p = list_pop(&daemon->peers, struct peer, list)) != NULL) {
+		list_add(&used, &p->list);
+		if (maybe_send_query_responses_peer(p))
+			break;
+	}
+	list_append_list(&daemon->peers, &used);
 }
 
 bool query_channel_range(struct daemon *daemon,
 			 struct peer *peer,
 			 u32 first_blocknum, u32 number_of_blocks,
 			 enum query_option_flags qflags,
-			 void (*cb)(struct peer *peer,
-				    u32 first_blocknum, u32 number_of_blocks,
-				    const struct range_query_reply *replies))
+			 void (*cb)(struct peer *,
+				    u32, u32,
+				    const struct range_query_reply *))
 {
 	u8 *msg;
 	struct tlv_query_channel_range_tlvs *tlvs;
@@ -1162,15 +1107,12 @@ bool query_channel_range(struct daemon *daemon,
 #if DEVELOPER
 /* This is a testing hack to allow us to artificially lower the maximum bytes
  * of short_channel_ids we'll encode, using dev_set_max_scids_encode_size. */
-struct io_plan *dev_set_max_scids_encode_size(struct io_conn *conn,
-					      struct daemon *daemon,
-					      const u8 *msg)
+void dev_set_max_scids_encode_size(struct daemon *daemon, const u8 *msg)
 {
 	if (!fromwire_gossipd_dev_set_max_scids_encode_size(msg,
 							   &dev_max_encoding_bytes))
 		master_badmsg(WIRE_GOSSIPD_DEV_SET_MAX_SCIDS_ENCODE_SIZE, msg);
 
 	status_debug("Set max_scids_encode_bytes to %u", dev_max_encoding_bytes);
-	return daemon_conn_read_next(conn, daemon->master);
 }
 #endif /* DEVELOPER */

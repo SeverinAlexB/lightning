@@ -1,9 +1,10 @@
-#include "wire.h"
+#include "config.h"
 #include <assert.h>
 #include <ccan/crypto/siphash24/siphash24.h>
 #include <ccan/endian/endian.h>
 #include <ccan/mem/mem.h>
 #include <common/utils.h>
+#include <wire/wire.h>
 
 #ifndef SUPERVERBOSE
 #define SUPERVERBOSE(...)
@@ -150,9 +151,9 @@ bool fromwire_bool(const u8 **cursor, size_t *max)
 	return ret;
 }
 
-errcode_t fromwire_errcode_t(const u8 **cursor, size_t *max)
+enum jsonrpc_errcode fromwire_jsonrpc_errcode(const u8 **cursor, size_t *max)
 {
-	errcode_t ret;
+	enum jsonrpc_errcode ret;
 
 	ret = (s32)fromwire_u32(cursor, max);
 
@@ -222,6 +223,8 @@ u8 *fromwire_tal_arrn(const tal_t *ctx,
 
 	arr = tal_arr(ctx, u8, num);
 	fromwire_u8_array(cursor, max, arr, num);
+	if (!*cursor)
+		return tal_free(arr);
 	return arr;
 }
 

@@ -20,8 +20,12 @@ struct peer;
 struct routing_state;
 
 struct half_chan {
-	/* Timestamp and index into store file */
+	/* Timestamp and index into store file - safe to broadcast */
 	struct broadcastable bcast;
+
+	/* Most recent gossip for the routing graph - may be rate-limited and
+	 * non-broadcastable. If there is no spam, rgraph == bcast. */
+	struct broadcastable rgraph;
 
 	/* Token bucket */
 	u8 tokens;
@@ -94,22 +98,6 @@ static inline bool chan_eq_scid(const struct chan *c,
 
 HTABLE_DEFINE_TYPE(struct chan, chan_map_scid, hash_scid, chan_eq_scid, chan_map);
 
-/* Container for local channel pointers. */
-static inline const struct short_channel_id *local_chan_map_scid(const struct local_chan *local_chan)
-{
-	return &local_chan->chan->scid;
-}
-
-static inline bool local_chan_eq_scid(const struct local_chan *local_chan,
-				      const struct short_channel_id *scid)
-{
-	return short_channel_id_eq(scid, &local_chan->chan->scid);
-}
-
-HTABLE_DEFINE_TYPE(struct local_chan,
-		   local_chan_map_scid, hash_scid, local_chan_eq_scid,
-		   local_chan_map);
-
 /* For a small number of channels (by far the most common) we use a simple
  * array, with empty buckets NULL.  For larger, we use a proper hash table,
  * with the extra allocation that implies. */
@@ -120,6 +108,10 @@ struct node {
 
 	/* Timestamp and index into store file */
 	struct broadcastable bcast;
+
+	/* Possibly spam flagged. Nonbroadcastable, but used for routing graph.
+	 * If there is no current spam, rgraph == bcast. */
+	struct broadcastable rgraph;
 
 	/* Token bucket */
 	u8 tokens;
@@ -191,33 +183,13 @@ HTABLE_DEFINE_TYPE(struct pending_cannouncement, panding_cannouncement_map_scid,
 struct pending_node_map;
 struct unupdated_channel;
 
-/* Fast versions: if you know n is one end of the channel */
-static inline struct node *other_node(const struct node *n,
-				      const struct chan *chan)
+/* If you know n is one end of the channel, get index of src == n */
+static inline int half_chan_idx(const struct node *n, const struct chan *chan)
 {
 	int idx = (chan->nodes[1] == n);
 
 	assert(chan->nodes[0] == n || chan->nodes[1] == n);
-	return chan->nodes[!idx];
-}
-
-/* If you know n is one end of the channel, get connection src == n */
-static inline struct half_chan *half_chan_from(const struct node *n,
-					       struct chan *chan)
-{
-	int idx = (chan->nodes[1] == n);
-
-	assert(chan->nodes[0] == n || chan->nodes[1] == n);
-	return &chan->half[idx];
-}
-
-/* If you know n is one end of the channel, get index dst == n */
-static inline int half_chan_to(const struct node *n, const struct chan *chan)
-{
-	int idx = (chan->nodes[1] == n);
-
-	assert(chan->nodes[0] == n || chan->nodes[1] == n);
-	return !idx;
+	return idx;
 }
 
 struct routing_state {
@@ -255,11 +227,11 @@ struct routing_state {
 	UINTMAP(bool) txout_failures, txout_failures_old;
 	struct oneshot *txout_failure_timer;
 
-        /* A map of local channels by short_channel_ids */
-	struct local_chan_map local_chan_map;
-
 	/* Highest timestamp of gossip we accepted (before now) */
 	u32 last_timestamp;
+
+	/* Channels which are closed, but we're waiting 12 blocks */
+	struct dying_channel *dying_channels;
 
 #if DEVELOPER
 	/* Override local time for gossip messages */
@@ -272,6 +244,21 @@ struct routing_state {
 	bool dev_fast_gossip_prune;
 #endif
 };
+
+/* Which direction are we?  False if neither. */
+static inline bool local_direction(struct routing_state *rstate,
+				   const struct chan *chan,
+				   int *direction)
+{
+	for (int dir = 0; dir <= 1; (dir)++) {
+		if (node_id_eq(&chan->nodes[dir]->id, &rstate->local_id)) {
+			if (direction)
+				*direction = dir;
+			return true;
+		}
+	}
+	return false;
+}
 
 static inline struct chan *
 get_channel(const struct routing_state *rstate,
@@ -379,7 +366,8 @@ bool routing_add_channel_update(struct routing_state *rstate,
 				const u8 *update TAKES,
 				u32 index,
 				struct peer *peer,
-				bool ignore_timestamp);
+				bool ignore_timestamp,
+				bool force_spam_flag);
 /**
  * Add a node_announcement to the network view without checking it
  *
@@ -391,7 +379,8 @@ bool routing_add_node_announcement(struct routing_state *rstate,
 				   const u8 *msg TAKES,
 				   u32 index,
 				   struct peer *peer,
-				   bool *was_unknown);
+				   bool *was_unknown,
+				   bool force_spam_flag);
 
 
 /**
@@ -402,8 +391,9 @@ bool routing_add_node_announcement(struct routing_state *rstate,
  * `announce_depth`.
  */
 bool routing_add_private_channel(struct routing_state *rstate,
-				 const struct peer *peer,
-				 const u8 *msg, u64 index);
+				 const struct node_id *id,
+				 struct amount_sat sat,
+				 const u8 *chan_ann, u64 index);
 
 /**
  * Get the local time.
@@ -412,51 +402,37 @@ bool routing_add_private_channel(struct routing_state *rstate,
  */
 struct timeabs gossip_time_now(const struct routing_state *rstate);
 
-static inline struct local_chan *is_local_chan(struct routing_state *rstate,
-					       const struct chan *chan)
-{
-	return local_chan_map_get(&rstate->local_chan_map, &chan->scid);
-}
+/**
+ * Add to rstate->dying_channels
+ *
+ * Exposed here for when we load the gossip_store.
+ */
+void remember_chan_dying(struct routing_state *rstate,
+			 const struct short_channel_id *scid,
+			 u32 deadline_blockheight,
+			 u64 index);
+
+/**
+ * When a channel's funding has been spent.
+ */
+void routing_channel_spent(struct routing_state *rstate,
+			   u32 current_blockheight,
+			   struct chan *chan);
+
+/**
+ * Clean up any dying channels.
+ *
+ * This finally deletes channel past their deadline.
+ */
+void routing_expire_channels(struct routing_state *rstate, u32 blockheight);
 
 /* Would we ratelimit a channel_update with this timestamp? */
 bool would_ratelimit_cupdate(struct routing_state *rstate,
 			     const struct half_chan *hc,
 			     u32 timestamp);
 
-/* Because we can have millions of channels, and we only want a local_disable
- * flag on ones connected to us, we keep a separate hashtable for that flag.
- */
-static inline bool is_chan_local_disabled(struct routing_state *rstate,
-					  const struct chan *chan)
-{
-	struct local_chan *local_chan = is_local_chan(rstate, chan);
-	return local_chan && local_chan->local_disabled;
-}
-
-static inline void local_disable_chan(struct routing_state *rstate,
-				      const struct chan *chan)
-{
-	struct local_chan *local_chan = is_local_chan(rstate, chan);
-	local_chan->local_disabled = true;
-}
-
-static inline void local_enable_chan(struct routing_state *rstate,
-				     const struct chan *chan)
-{
-	struct local_chan *local_chan = is_local_chan(rstate, chan);
-	local_chan->local_disabled = false;
-}
-
-/* Remove channel from store: announcement and any updates. */
-void remove_channel_from_store(struct routing_state *rstate,
-			       struct chan *chan);
-
 /* Returns an error string if there are unfinalized entries after load */
 const char *unfinalized_entries(const tal_t *ctx, struct routing_state *rstate);
 
 void remove_all_gossip(struct routing_state *rstate);
-
-/* This scid is dead to us. */
-void add_to_txout_failures(struct routing_state *rstate,
-			   const struct short_channel_id *scid);
 #endif /* LIGHTNING_GOSSIPD_ROUTING_H */

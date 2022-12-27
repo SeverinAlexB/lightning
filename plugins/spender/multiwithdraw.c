@@ -1,10 +1,12 @@
+#include "config.h"
 #include <bitcoin/chainparams.h>
 #include <bitcoin/psbt.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/json_out/json_out.h>
 #include <ccan/tal/str/str.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
+#include <common/psbt_open.h>
 #include <common/pseudorand.h>
 #include <common/type_to_string.h>
 #include <plugins/spender/multiwithdraw.h>
@@ -43,6 +45,8 @@ struct multiwithdraw_destination {
 	struct amount_sat amount;
 	/* Whether the amount was "all".  */
 	bool all;
+	/* Whether this is to an external addr (all passed in are assumed) */
+	bool is_to_external;
 };
 
 struct multiwithdraw_command {
@@ -92,6 +96,7 @@ param_outputs_array(struct command *cmd,
 		enum address_parse_result res;
 
 		dest = &(*outputs)[i];
+		dest->is_to_external = true;
 
 		if (e->type != JSMN_OBJECT)
 			goto err;
@@ -283,7 +288,7 @@ mw_forward_error(struct command *cmd UNUSED,
 }
 /* Use this instead of command_fail.  */
 static struct command_result *
-mw_fail(struct multiwithdraw_command *mw, errcode_t code,
+mw_fail(struct multiwithdraw_command *mw, enum jsonrpc_errcode code,
 	const char *fmt, ...)
 {
 	va_list ap;
@@ -298,7 +303,7 @@ mw_fail(struct multiwithdraw_command *mw, errcode_t code,
 
 	js = new_json_stream(tmpctx, mw->cmd, NULL);
 	json_object_start(js, NULL);
-	json_add_errcode(js, "code", code);
+	json_add_jsonrpc_errcode(js, "code", code);
 	json_add_string(js, "message", message);
 	json_object_end(js);
 
@@ -351,7 +356,7 @@ static struct command_result *start_mw(struct multiwithdraw_command *mw)
 					    &mw_forward_error,
 					    mw);
 		json_add_bool(req->js, "reservedok", false);
-		json_add_jsonstr(req->js, "utxos", mw->utxos);
+		json_add_jsonstr(req->js, "utxos", mw->utxos, strlen(mw->utxos));
 	} else {
 		plugin_log(mw->cmd->plugin, LOG_DBG,
 			   "multiwithdraw %"PRIu64": fundpsbt.",
@@ -364,7 +369,6 @@ static struct command_result *start_mw(struct multiwithdraw_command *mw)
 					    mw);
 		json_add_u32(req->js, "minconf", *mw->minconf);
 	}
-	json_add_bool(req->js, "reserve", true);
 	if (mw->has_all)
 		json_add_string(req->js, "satoshi", "all");
 	else {
@@ -406,6 +410,7 @@ mw_after_fundpsbt(struct command *cmd,
 	u32 feerate_per_kw;
 	u32 estimated_final_weight;
 	struct amount_sat excess_sat;
+	struct amount_msat excess_msat;
 	bool ok = true;
 
 	/* Extract results.  */
@@ -426,7 +431,8 @@ mw_after_fundpsbt(struct command *cmd,
 
 	field = ok ? json_get_member(buf, result, "excess_msat") : NULL;
 	ok = ok && field;
-	ok = ok && json_to_sat(buf, field, &excess_sat);
+	ok = ok && json_to_msat(buf, field, &excess_msat);
+	ok = ok && amount_msat_to_sat(&excess_sat, excess_msat);
 
 	if (!ok)
 		plugin_err(mw->cmd->plugin,
@@ -536,6 +542,7 @@ mw_after_newaddr(struct command *cmd,
 	change.script = script;
 	change.amount = mw->change_amount;
 	change.all = false;
+	change.is_to_external = false;
 
 	tal_arr_expand(&mw->outputs, change);
 
@@ -559,15 +566,18 @@ mw_load_outputs(struct multiwithdraw_command *mw)
 {
 	/* Insert outputs at random locations.  */
 	for (size_t i = 0; i < tal_count(mw->outputs); ++i) {
+		struct wally_psbt_output *out;
 		/* There are already `i` outputs at this point,
 		 * select from 0 to `i` inclusive, with 0 meaning
 		 * "before first output" and `i` meaning "after
 		 * last output".  */
 		size_t point = pseudorand(i + 1);
-		psbt_insert_output(mw->psbt,
-				   mw->outputs[i].script,
-				   mw->outputs[i].amount,
-				   point);
+		out = psbt_insert_output(mw->psbt,
+					 mw->outputs[i].script,
+					 mw->outputs[i].amount,
+					 point);
+		if (mw->outputs[i].is_to_external)
+			psbt_output_mark_as_external(mw->psbt, out);
 	}
 
 	if (chainparams->is_elements) {

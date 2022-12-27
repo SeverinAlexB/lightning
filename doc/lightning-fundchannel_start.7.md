@@ -4,7 +4,7 @@ lightning-fundchannel\_start -- Command for initiating channel establishment for
 SYNOPSIS
 --------
 
-**fundchannel\_start** *id* *amount* \[*feerate* *announce* *close_to* *push_msat*\]
+**fundchannel\_start** *id* *amount* [*feerate* *announce* *close_to* *push_msat*]
 
 DESCRIPTION
 -----------
@@ -43,9 +43,15 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **funding_address** (string): The address to send funding to for the channel
+
+- **funding\_address** (string): The address to send funding to for the channel. DO NOT SEND COINS TO THIS ADDRESS YET.
 - **scriptpubkey** (hex): The raw scriptPubkey for the address
-- **close_to** (hex, optional): The raw scriptPubkey which mutual close will go to; only present if *close_to* parameter was specified and peer supports `option_upfront_shutdown_script`
+- **close\_to** (hex, optional): The raw scriptPubkey which mutual close will go to; only present if *close_to* parameter was specified and peer supports `option_upfront_shutdown_script`
+- **mindepth** (u32, optional): Number of confirmations before we consider the channel active.
+
+The following warnings may also be returned:
+
+- **warning\_usage**: A warning not to prematurely broadcast the funding transaction (always present!)
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -79,4 +85,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:8d7a9f3cf343f7c72148a5d0b1aa0217cd9ef91e8c618dc2ff1077b15b9f25d4)
+[comment]: # ( SHA256STAMP:b054bc55f69cc1f23f78f342974a8476eab84146bbcf57ab30095e8eba3ed849)

@@ -7,14 +7,14 @@
 struct channel;
 struct crypto_state;
 struct lightningd;
-struct per_peer_state;
+struct peer_fd;
 struct peer;
 
-void peer_start_channeld(struct channel *channel,
-			 struct per_peer_state *pps,
+bool peer_start_channeld(struct channel *channel,
+			 struct peer_fd *peer_fd,
 			 const u8 *fwd_msg,
 			 bool reconnected,
-			 const u8 *reestablish_only);
+			 bool reestablish_only);
 
 /* Returns true if subd told, otherwise false. */
 bool channel_tell_depth(struct lightningd *ld,
@@ -30,16 +30,17 @@ void channel_notify_new_block(struct lightningd *ld,
 struct command_result *cancel_channel_before_broadcast(struct command *cmd,
 						       struct peer *peer);
 
-/* Update the channel info on funding locked */
-bool channel_on_funding_locked(struct channel *channel,
-			       struct pubkey *next_per_commitment_point);
+/* Update the channel info on channel_ready */
+bool channel_on_channel_ready(struct channel *channel,
+			      struct pubkey *next_per_commitment_point);
 
 /* Record channel open (coin movement notifications) */
-void channel_record_open(struct channel *channel);
-/* Forget a channel. Deletes the channel and handles all
- * associated waiting commands, if present. Notifies peer if available */
-void forget_channel(struct channel *channel, const char *err_msg);
+void channel_record_open(struct channel *channel, u32 blockheight, bool record_push);
 
 /* A channel has unrecoverably fallen behind */
 void channel_fallen_behind(struct channel *channel, const u8 *msg);
+
+/* Fresh channel_update for this channel. */
+void channel_replace_update(struct channel *channel, u8 *update TAKES);
+
 #endif /* LIGHTNING_LIGHTNINGD_CHANNEL_CONTROL_H */

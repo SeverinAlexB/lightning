@@ -1,9 +1,12 @@
 #include "config.h"
+#include "config_test.h"
 #include <common/amount.h>
 #include <common/bigsize.h>
 #include <common/channel_id.h>
 #include <common/json_stream.h>
 #include <common/node_id.h>
+#include <common/setup.h>
+#include <common/wireaddr.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 
@@ -17,7 +20,7 @@ int test_printf(const char *format, ...);
 int test_chdir(const char *path);
 
 #define main test_main
-#define read test_read
+#define cli_read test_read
 #define socket test_socket
 #define connect test_connect
 #define getpid test_getpid
@@ -69,22 +72,12 @@ struct amount_sat fromwire_amount_sat(const u8 **cursor UNNEEDED, size_t *max UN
 bigsize_t fromwire_bigsize(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
 { fprintf(stderr, "fromwire_bigsize called!\n"); abort(); }
 /* Generated stub for fromwire_channel_id */
-void fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
+bool fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 			 struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "fromwire_channel_id called!\n"); abort(); }
 /* Generated stub for fromwire_node_id */
 void fromwire_node_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, struct node_id *id UNNEEDED)
 { fprintf(stderr, "fromwire_node_id called!\n"); abort(); }
-/* Generated stub for json_add_member */
-void json_add_member(struct json_stream *js UNNEEDED,
-		     const char *fieldname UNNEEDED,
-		     bool quote UNNEEDED,
-		     const char *fmt UNNEEDED, ...)
-{ fprintf(stderr, "json_add_member called!\n"); abort(); }
-/* Generated stub for json_member_direct */
-char *json_member_direct(struct json_stream *js UNNEEDED,
-			 const char *fieldname UNNEEDED, size_t extra UNNEEDED)
-{ fprintf(stderr, "json_member_direct called!\n"); abort(); }
 /* Generated stub for log_level_name */
 const char *log_level_name(enum log_level level UNNEEDED)
 { fprintf(stderr, "log_level_name called!\n"); abort(); }
@@ -141,7 +134,7 @@ int test_chdir(const char *path)
 
 static const char *response =
 	"{ \"jsonrpc\":\"2.0\","
-	"\"id\":\"lightning-cli-9999\","
+	"\"id\":\"cli:listconfigs#9999\","
 	"\"result\":"
 	"{\"# version\":\"v0.9.0-240-gd7ff74e-modded\",\"lightning-dir\":\"/home/rusty/.lightning\",\"network\":\"testnet\",\"allow-deprecated-apis\":false,\"rpc-file\":\"lightning-rpc\",\"plugins\":[{\"path\":\"/home/rusty/.lightning/plugins/summary/summary.py\",\"name\":\"summary.py\",\"options\":{\"summary-currency\":\"USD\",\"summary-currency-prefix\":\"USD $\",\"summary-availability-interval\":\"300\",\"summary-availability-window\":\"72\"}}],\"important-plugins\":[{\"path\":\"/home/rusty/lightning/lightningd/../plugins/autoclean\",\"name\":\"autoclean\",\"options\":{\"autocleaninvoice-cycle\":null,\"autocleaninvoice-expired-by\":null}},{\"path\":\"/home/rusty/lightning/lightningd/../plugins/bcli\",\"name\":\"bcli\",\"options\":{\"bitcoin-datadir\":null,\"bitcoin-cli\":null,\"bitcoin-rpcuser\":null,\"bitcoin-rpcpassword\":null,\"bitcoin-rpcconnect\":null,\"bitcoin-rpcport\":null,\"bitcoin-retry-timeout\":null,\"commit-fee\":null,\"dev-max-fee-multiplier\":null}},{\"path\":\"/home/rusty/lightning/lightningd/../plugins/fundchannel\",\"name\":\"fundchannel\"},{\"path\":\"/home/rusty/lightning/lightningd/../plugins/keysend\",\"name\":\"keysend\"},{\"path\":\"/home/rusty/lightning/lightningd/../plugins/pay\",\"name\":\"pay\",\"options\":{\"disable-mpp\":false}}],\"disable-plugin\":[],\"always-use-proxy\":false,\"daemon\":\"false\",\"wallet\":\"sqlite3:///home/rusty/.lightning/testnet/lightningd.sqlite3\",\"wumbo\":false,\"wumbo\":false,\"rgb\":\"031a34\",\"alias\":\"SLICKERMASTER-40-gd7ff74e-modded\",\"pid-file\":\"/home/rusty/.lightning/lightningd-testnet.pid\",\"ignore-fee-limits\":true,\"watchtime-blocks\":6,\"max-locktime-blocks\":2016,\"funding-confirms\":1,\"commit-fee-min\":0,\"commit-fee-max\":0,\"cltv-delta\":6,\"cltv-final\":10,\"commit-time\":10,\"fee-base\":1,\"rescan\":30,\"fee-per-satoshi\":10,\"max-concurrent-htlcs\":483,\"min-capacity-sat\":10000,\"bind-addr\":\":9736\",\"announce-addr\":\"128.199.202.168:9736\",\"announce-addr\":\"[2400:6180:0:d0::5cd2:a001]:9736\",\"offline\":\"false\",\"autolisten\":true,\"disable-dns\":\"false\",\"enable-autotor-v2-mode\":\"false\",\"encrypted-hsm\":false,\"rpc-file-mode\":\"0600\",\"log-level\":\"DEBUG\",\"log-prefix\":\"lightningd\",\"log-file\":\"/home/rusty/logs/lightningd-testnet.log\",\"dev-no-reconnect\":\"false\",\"dev-allow-localhost\":\"false\",\"dev-bitcoind-poll\":30,\"dev-fast-gossip\":\"false\",\"dev-fast-gossip-prune\":\"false\",\"dev-gossip-time\":0,\"dev-max-funding-unconfirmed-blocks\":2016,\"dev-no-htlc-timeout\":\"false\",\"dev-fail-process-onionpacket\":\"false\",\"dev-no-version-checks\":\"false\",\"dev-builtin-plugins-unimportant\":\"false\"}"
 	"}\n\n";
@@ -162,7 +155,7 @@ ssize_t test_read(int fd UNUSED, void *buf, size_t len)
 
 int main(int argc UNUSED, char *argv[])
 {
-	setup_locale();
+	common_setup(argv[0]);
 
 	char *fake_argv[] = { argv[0], "--lightning-dir=/tmp/", "-H", "listconfigs", "-N", "none", NULL };
 
@@ -170,7 +163,6 @@ int main(int argc UNUSED, char *argv[])
 	max_read_return = -1;
 	assert(test_main(6, fake_argv) == 0);
 	assert(!taken_any());
-	take_cleanup();
+	common_shutdown();
 	return 0;
 }
-

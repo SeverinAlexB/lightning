@@ -26,6 +26,7 @@
  *
  * WE ASSUME NO MALLEABILITY!  This requires segregated witness.
  */
+#include "config.h"
 #include <common/type_to_string.h>
 #include <lightningd/chaintopology.h>
 #include <lightningd/channel.h>
@@ -122,9 +123,9 @@ struct txwatch *watch_txid(const tal_t *ctx,
 			   struct channel *channel,
 			   const struct bitcoin_txid *txid,
 			   enum watch_result (*cb)(struct lightningd *ld,
-						   struct channel *channel,
-						   const struct bitcoin_txid *txid,
-						   const struct bitcoin_tx *tx,
+						   struct channel *,
+						   const struct bitcoin_txid *,
+						   const struct bitcoin_tx *,
 						   unsigned int depth))
 {
 	struct txwatch *w;
@@ -188,7 +189,7 @@ struct txowatch *watch_txo(const tal_t *ctx,
 			   struct chain_topology *topo,
 			   struct channel *channel,
 			   const struct bitcoin_outpoint *outpoint,
-			   enum watch_result (*cb)(struct channel *channel,
+			   enum watch_result (*cb)(struct channel *channel_,
 						   const struct bitcoin_tx *tx,
 						   size_t input_num,
 						   const struct block *block))

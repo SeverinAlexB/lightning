@@ -48,8 +48,6 @@ struct htlc_in {
 
 	/* If it was blinded. */
 	struct pubkey *blinding;
-	/* Only set if blinding != NULL */
-	struct secret blinding_ss;
 	/* true if we supplied the preimage */
 	bool *we_filled;
 	/* true if we immediately fail the htlc (too much dust) */
@@ -89,6 +87,10 @@ struct htlc_out {
 
 	/* Is this a locally-generated payment?  Implies ->in is NULL. */
 	bool am_origin;
+
+	/* Amount of fees that this out htlc pays (if am_origin);
+	 * otherwise fees collected by routing this out */
+	struct amount_msat fees;
 
 	/* If am_origin, this is the partid of the payment. */
 	u64 partid;
@@ -155,7 +157,6 @@ struct htlc_in *new_htlc_in(const tal_t *ctx,
 			    const struct sha256 *payment_hash,
 			    const struct secret *shared_secret TAKES,
 			    const struct pubkey *blinding TAKES,
-			    const struct secret *blinding_ss,
 			    const u8 *onion_routing_packet,
 			    bool fail_immediate);
 
@@ -168,6 +169,7 @@ struct htlc_out *new_htlc_out(const tal_t *ctx,
 			      const u8 *onion_routing_packet,
 			      const struct pubkey *blinding,
 			      bool am_origin,
+			      struct amount_msat final_msat,
 			      u64 partid,
 			      u64 groupid,
 			      struct htlc_in *in);

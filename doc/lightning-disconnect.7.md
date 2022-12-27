@@ -4,7 +4,7 @@ lightning-disconnect -- Command for disconnecting from another lightning node
 SYNOPSIS
 --------
 
-**disconnect** *id* \[*force*\]
+**disconnect** *id* [*force*]
 
 DESCRIPTION
 -----------
@@ -59,4 +59,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:86b47e27413141ffd6e8b79d83ac4a5cc80e5a7e6f5ba4b0df6825e744f9eea7)
+[comment]: # ( SHA256STAMP:326e5801f65998e13e909d8b682e9fbc9824f3a43aa7da1d76b871882e52f293)

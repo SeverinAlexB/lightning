@@ -7,7 +7,7 @@ SYNOPSIS
 **(WARNING: experimental-offers only)**
 
 
-**offerout** *amount* *description* \[*issuer*\] \[*label*\] \[*absolute_expiry*\] \[*refund_for*\]
+**offerout** *amount* *description* [*issuer*] [*label*] [*absolute_expiry*] [*refund_for*]
 
 DESCRIPTION
 -----------
@@ -55,11 +55,11 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **offer_id** (hex): the id of this offer (merkle hash of non-signature fields) (always 64 characters)
+
+- **offer\_id** (hex): the id of this offer (merkle hash of non-signature fields) (always 64 characters)
 - **active** (boolean): whether this will pay a matching incoming invoice (always *true*)
-- **single_use** (boolean): whether this expires as soon as it's paid out (always *true*)
+- **single\_use** (boolean): whether this expires as soon as it's paid out (always *true*)
 - **bolt12** (string): the bolt12 encoding of the offer
-- **bolt12_unsigned** (string): the bolt12 encoding of the offer, without a signature
 - **used** (boolean): True if an incoming invoice has been paid (always *false*)
 - **created** (boolean): false if the offer already existed
 - **label** (string, optional): the (optional) user-specified label
@@ -99,4 +99,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:99a4e1cdf68ec7bcf05b9d6b088b8a84f01d085fae5a1565192f488ff8484570)
+[comment]: # ( SHA256STAMP:903e40a51c806613da956ce1b4021e9aac964c11d0d0c2714aeb68a12f083265)

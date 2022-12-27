@@ -1,9 +1,10 @@
-#include "address.h"
-#include "locktime.h"
-#include "preimage.h"
-#include "pubkey.h"
-#include "script.h"
+#include "config.h"
 #include <assert.h>
+#include <bitcoin/address.h>
+#include <bitcoin/locktime.h>
+#include <bitcoin/preimage.h>
+#include <bitcoin/pubkey.h>
+#include <bitcoin/script.h>
 #include <ccan/endian/endian.h>
 #include <ccan/mem/mem.h>
 #include <common/utils.h>
@@ -186,13 +187,6 @@ u8 *scriptpubkey_p2pkh(const tal_t *ctx, const struct bitcoin_address *addr)
 	return script;
 }
 
-u8 *scriptpubkey_opreturn(const tal_t *ctx)
-{
-	u8 *script = tal_arr(ctx, u8, 0);
-
-	add_op(&script, OP_RETURN);
-	return script;
-}
 u8 *scriptpubkey_opreturn_padded(const tal_t *ctx)
 {
 	u8 *script = tal_arr(ctx, u8, 0);
@@ -320,10 +314,10 @@ u8 *scriptpubkey_witness_raw(const tal_t *ctx, u8 version,
  *
  * #### `to_remote` Output
  *
- * If `option_anchor_outputs` applies to the commitment
+ * If `option_anchors` applies to the commitment
  * transaction, the `to_remote` output is encumbered by a one
  * block csv lock.
- *    <remote_pubkey> OP_CHECKSIGVERIFY 1 OP_CHECKSEQUENCEVERIFY
+ *    <remotepubkey> OP_CHECKSIGVERIFY 1 OP_CHECKSEQUENCEVERIFY
  */
 /* BOLT- #3
  * ##### Leased channel (`option_will_fund`)
@@ -570,7 +564,7 @@ u8 *bitcoin_wscript_to_local(const tal_t *ctx, u16 to_self_delay,
  * This output sends funds to either an HTLC-timeout transaction after the
  * HTLC-timeout or to the remote node using the payment preimage or the
  * revocation key. The output is a P2WSH, with a witness script (no
- * option_anchor_outputs):
+ * option_anchors):
  *
  *     # To remote node with revocation key
  *     OP_DUP OP_HASH160 <RIPEMD160(SHA256(revocationpubkey))> OP_EQUAL
@@ -588,7 +582,7 @@ u8 *bitcoin_wscript_to_local(const tal_t *ctx, u16 to_self_delay,
  *         OP_ENDIF
  *     OP_ENDIF
  *
- * Or, with `option_anchor_outputs`:
+ * Or, with `option_anchors`:
  *
  *  # To remote node with revocation key
  *  OP_DUP OP_HASH160 <RIPEMD160(SHA256(revocationpubkey))> OP_EQUAL
@@ -677,7 +671,7 @@ u8 *bitcoin_wscript_htlc_offer(const tal_t *ctx,
  * This output sends funds to either the remote node after the HTLC-timeout or
  * using the revocation key, or to an HTLC-success transaction with a
  * successful payment preimage. The output is a P2WSH, with a witness script
- * (no `option_anchor_outputs`):
+ * (no `option_anchors`):
  *
  *     # To remote node with revocation key
  *     OP_DUP OP_HASH160 <RIPEMD160(SHA256(revocationpubkey))> OP_EQUAL
@@ -697,7 +691,7 @@ u8 *bitcoin_wscript_htlc_offer(const tal_t *ctx,
  *         OP_ENDIF
  *     OP_ENDIF
  *
- * Or, with `option_anchor_outputs`:
+ * Or, with `option_anchors`:
  *
  *  # To remote node with revocation key
  *  OP_DUP OP_HASH160 <RIPEMD160(SHA256(revocationpubkey))> OP_EQUAL
@@ -865,7 +859,7 @@ u8 *bitcoin_wscript_anchor(const tal_t *ctx,
 	u8 *script = tal_arr(ctx, u8, 0);
 
 	/* BOLT #3:
-	 * #### `to_local_anchor` and `to_remote_anchor` Output (option_anchor_outputs)
+	 * #### `to_local_anchor` and `to_remote_anchor` Output (option_anchors)
 	 *...
 	 *  <local_funding_pubkey/remote_funding_pubkey> OP_CHECKSIG OP_IFDUP
 	 *  OP_NOTIF

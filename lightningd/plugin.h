@@ -81,6 +81,9 @@ struct plugin {
 	 * C-lightning should terminate as well.  */
 	bool important;
 
+	/* Can this handle non-numeric JSON ids? */
+	bool non_numeric_ids;
+
 	/* Parameters for dynamically-started plugins. */
 	const char *parambuf;
 	const jsmntok_t *params;
@@ -100,7 +103,7 @@ struct plugins {
 	bool startup;
 
 	/* Currently pending requests by their request ID */
-	UINTMAP(struct jsonrpc_request *) pending_requests;
+	STRMAP(struct jsonrpc_request *) pending_requests;
 	struct log *log;
 	struct log_book *log_book;
 
@@ -112,9 +115,6 @@ struct plugins {
 
 	/* Blacklist of plugins from --disable-plugin */
 	const char **blacklist;
-
-	/* Whether we are shutting down (`plugins_free` is called) */
-	bool shutdown;
 
 	/* Index to show what order they were added in */
 	u64 plugin_idx;
@@ -217,17 +217,19 @@ bool plugin_blacklisted(struct plugins *plugins, const char *name);
 
 /**
  * Kick off initialization of a plugin.
+ * @p: plugin
+ * @cmd_id: optional JSON cmd_id which caused this.
  *
  * Returns error string, or NULL.
  */
-const char *plugin_send_getmanifest(struct plugin *p);
+const char *plugin_send_getmanifest(struct plugin *p, const char *cmd_id);
 
 /**
  * Kick of initialization of all plugins which need it/
  *
  * Return true if any were started.
  */
-bool plugins_send_getmanifest(struct plugins *plugins);
+bool plugins_send_getmanifest(struct plugins *plugins, const char *cmd_id);
 
 /**
  * Kill a plugin process and free @plugin, with an error message.
@@ -263,18 +265,11 @@ struct command_result *plugin_register_all_complete(struct lightningd *ld,
  * and send them over to the plugin. This finalizes the initialization
  * of the plugins and signals that lightningd is now ready to process
  * incoming JSON-RPC calls and messages.
+ *
+ * It waits for plugins to be initialized, but returns false if we
+ * should exit (an important plugin failed, or we got a shutdown command).
  */
-void plugins_config(struct plugins *plugins);
-
-/**
- * Are any plugins at this state still?
- */
-bool plugins_any_in_state(const struct plugins *plugins, enum plugin_state state);
-
-/**
- * Are all plugins at this state?
- */
-bool plugins_all_in_state(const struct plugins *plugins, enum plugin_state state);
+bool plugins_config(struct plugins *plugins);
 
 /**
  * This populates the jsonrpc request with the plugin/lightningd specifications
@@ -372,8 +367,4 @@ struct log *plugin_get_log(struct plugin *plugin);
 void plugins_set_builtin_plugins_dir(struct plugins *plugins,
 				     const char *dir);
 
-/* Pair of functions to detect if plugin destroys itself: must always
- * call both! */
-struct plugin_destroyed *plugin_detect_destruction(const struct plugin *plugin);
-bool was_plugin_destroyed(struct plugin_destroyed *destroyed);
 #endif /* LIGHTNING_LIGHTNINGD_PLUGIN_H */

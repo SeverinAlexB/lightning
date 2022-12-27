@@ -1,3 +1,4 @@
+#include "config.h"
 #include <ccan/array_size/array_size.h>
 #include <ccan/cast/cast.h>
 #include <ccan/tal/str/str.h>
@@ -100,11 +101,9 @@ struct height_states *dup_height_states(const tal_t *ctx,
 				  tal_steal(ctx, states));
 
 	n = tal_dup(ctx, struct height_states, states);
-	for (size_t i = 0; i < ARRAY_SIZE(n->height); i++) {
-		if (n->height[i])
-			n->height[i] = tal_dup(n, u32, n->height[i]);
+	for (size_t i = 0; i < ARRAY_SIZE(n->height); i++)
+		n->height[i] = tal_dup_or_null(n, u32, n->height[i]);
 
-	}
 	return n;
 }
 

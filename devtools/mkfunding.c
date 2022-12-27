@@ -6,11 +6,13 @@
  *
  * lightning/devtools/mkfunding 16835ac8c154b616baac524163f41fb0c4f82c7b972ad35d4d6f18d854f6856b 3 0.03btc 253 16c5027616e940d1e72b4c172557b3b799a93c0582f924441174ea556aadd01c 0000000000000000000000000000000000000000000000000000000000000050 0000000000000000000000000000000000000000000000000000000000000060
  */
+#include "config.h"
 #include <bitcoin/script.h>
 #include <ccan/err/err.h>
 #include <ccan/str/hex/hex.h>
 #include <common/derive_basepoints.h>
 #include <common/initial_commit_tx.h>
+#include <common/setup.h>
 #include <common/status.h>
 #include <common/type_to_string.h>
 #include <common/utxo.h>
@@ -85,7 +87,7 @@ int main(int argc, char *argv[])
 	struct bitcoin_txid txid;
 	u8 **witnesses;
 
-	setup_locale();
+	common_setup(argv[0]);
 	chainparams = chainparams_for_network("bitcoin");
 
 	secp256k1_ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY |
@@ -142,6 +144,9 @@ int main(int argc, char *argv[])
 		     type_to_string(NULL, struct amount_sat, &input.amount),
 		     type_to_string(NULL, struct amount_sat, &fee));
 
+	/* Find the P2WPKH script from input pubkey */
+	input.scriptPubkey = scriptpubkey_p2wpkh(NULL, &inputkey);
+
 	/* No change output, so we don't need a bip32 base. */
 	tx = funding_tx(NULL, &input, funding_amount,
 			&funding_localkey, &funding_remotekey);
@@ -167,6 +172,7 @@ int main(int argc, char *argv[])
 	       type_to_string(NULL, struct bitcoin_txid, &txid));
 
 	printf("tx: %s\n", tal_hex(NULL, linearize_tx(NULL, tx)));
+	common_shutdown();
 
 	return 0;
 }

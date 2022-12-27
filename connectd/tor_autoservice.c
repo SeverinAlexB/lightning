@@ -86,7 +86,6 @@ static void discard_remaining_response(struct rbuf *rbuf)
 static struct wireaddr *make_onion(const tal_t *ctx,
 				   struct rbuf *rbuf,
 				   const struct wireaddr *local,
-				   bool use_v3_autotor,
 				   u16 port)
 {
 	char *line;
@@ -101,25 +100,18 @@ static struct wireaddr *make_onion(const tal_t *ctx,
 		if (!strstarts(line, "VERSION Tor="))
 			continue;
 
-		if (use_v3_autotor)
-			if (strstr(line, "\"0.0") ||
-				strstr(line, "\"0.1") ||
-				strstr(line, "\"0.2") ||
-				strstr(line, "\"0.3")) {
-						use_v3_autotor = false;
-						status_unusual("Autotor: fallback to try a V2 onion service, your Tor version is smaller than 0.4.x.x");
-			}
-	};
+		if (strstr(line, "\"0.0") ||
+		    strstr(line, "\"0.1") ||
+		    strstr(line, "\"0.2") ||
+		    strstr(line, "\"0.3")) {
+			status_failed(STATUS_FAIL_INTERNAL_ERROR,
+				      "Autotor: your Tor version is smaller than 0.4.x.x");
+		}
+	}
 
-	if (!use_v3_autotor) {
-		tor_send_cmd(rbuf,
-		     tal_fmt(tmpctx, "ADD_ONION NEW:RSA1024 Port=%d,%s Flags=DiscardPK,Detach",
-			     port, fmt_wireaddr(tmpctx, local)));
-	} else {
-		tor_send_cmd(rbuf,
+	tor_send_cmd(rbuf,
 		     tal_fmt(tmpctx, "ADD_ONION NEW:ED25519-V3 Port=%d,%s Flags=DiscardPK,Detach",
 			     port, fmt_wireaddr(tmpctx, local)));
-	}
 
 	while ((line = tor_response_line(rbuf)) != NULL) {
 		const char *name;
@@ -146,7 +138,7 @@ static struct wireaddr *make_onion(const tal_t *ctx,
 
 static struct wireaddr *make_fixed_onion(const tal_t *ctx,
 				   struct rbuf *rbuf,
-				   const struct wireaddr *local, const u8 *blob, u16 port)
+				   const struct wireaddr *local, const char *blob, u16 port)
 {
 	char *line;
 	struct wireaddr *onion;
@@ -265,36 +257,17 @@ static void negotiate_auth(struct rbuf *rbuf, const char *tor_password)
 		      "Tor protocolinfo did not give auth");
 }
 
-/* We need to have a bound address we can tell Tor to connect to */
-const struct wireaddr *
-find_local_address(const struct wireaddr_internal *bindings)
-{
-	for (size_t i = 0; i < tal_count(bindings); i++) {
-		if (bindings[i].itype != ADDR_INTERNAL_WIREADDR)
-			continue;
-		if (bindings[i].u.wireaddr.type != ADDR_TYPE_IPV4
-		    && bindings[i].u.wireaddr.type != ADDR_TYPE_IPV6)
-			continue;
-		return &bindings[i].u.wireaddr;
-	}
-	status_failed(STATUS_FAIL_INTERNAL_ERROR,
-		      "No local address found to tell Tor to connect to");
-}
-
 struct wireaddr *tor_autoservice(const tal_t *ctx,
 				 const struct wireaddr_internal *tor_serviceaddr,
 				 const char *tor_password,
-				 const struct wireaddr_internal *bindings,
-				 const bool use_v3_autotor)
+				 const struct wireaddr *laddr)
 {
 	int fd;
-	const struct wireaddr *laddr;
 	struct wireaddr *onion;
 	struct addrinfo *ai_tor;
 	struct rbuf rbuf;
 	char *buffer;
 
-	laddr = find_local_address(bindings);
 	ai_tor = wireaddr_to_addrinfo(tmpctx, &tor_serviceaddr->u.torservice.address);
 
 	fd = socket(ai_tor->ai_family, SOCK_STREAM, 0);
@@ -308,7 +281,7 @@ struct wireaddr *tor_autoservice(const tal_t *ctx,
 	rbuf_init(&rbuf, fd, buffer, tal_count(buffer), buf_resize);
 
 	negotiate_auth(&rbuf, tor_password);
-	onion = make_onion(ctx, &rbuf, laddr, use_v3_autotor, tor_serviceaddr->u.torservice.port);
+	onion = make_onion(ctx, &rbuf, laddr, tor_serviceaddr->u.torservice.port);
 
 	/*on the other hand we can stay connected until ln finish to keep onion alive and then vanish */
 	//because when we run with Detach flag as we now do every start of LN creates a new addr while the old
@@ -323,7 +296,7 @@ struct wireaddr *tor_autoservice(const tal_t *ctx,
 struct wireaddr *tor_fixed_service(const tal_t *ctx,
 				 const struct wireaddr_internal *tor_serviceaddr,
 				 const char *tor_password,
-				 const u8 *blob,
+				 const char *blob,
 				 const struct wireaddr *bind,
 				 const u8 index)
 {

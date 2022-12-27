@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include "db.h"
+#include <common/onion_encode.h>
 #include <common/penalty_base.h>
 #include <common/utxo.h>
 #include <common/wallet.h>
@@ -157,7 +158,47 @@ static inline const char* forward_status_name(enum forward_status status)
 	abort();
 }
 
-bool string_to_forward_status(const char *status_str, enum forward_status *status);
+bool string_to_forward_status(const char *status_str, size_t len,
+			      enum forward_status *status);
+
+/* /!\ This is a DB ENUM, please do not change the numbering of any
+ * already defined elements (adding is ok) /!\ */
+enum forward_style {
+	FORWARD_STYLE_LEGACY = 0,
+	FORWARD_STYLE_TLV = 1,
+	FORWARD_STYLE_UNKNOWN = 2, /* Not actually in db, safe to renumber! */
+};
+
+/* Wrapper to ensure types don't change, and we don't insert/extract
+ * invalid ones from db */
+static inline enum forward_style forward_style_in_db(enum forward_style o)
+{
+	switch (o) {
+	case FORWARD_STYLE_LEGACY:
+		BUILD_ASSERT(FORWARD_STYLE_LEGACY == 0);
+		return o;
+	case FORWARD_STYLE_TLV:
+		BUILD_ASSERT(FORWARD_STYLE_TLV == 1);
+		return o;
+	case FORWARD_STYLE_UNKNOWN:
+		/* Not recorded in DB! */
+		break;
+	}
+	fatal("%s: %u is invalid", __func__, o);
+}
+
+static inline const char *forward_style_name(enum forward_style style)
+{
+	switch (style) {
+	case FORWARD_STYLE_UNKNOWN:
+		return "UNKNOWN";
+	case FORWARD_STYLE_TLV:
+		return "tlv";
+	case FORWARD_STYLE_LEGACY:
+		return "legacy";
+	}
+	abort();
+}
 
 /* DB wrapper to check htlc_state */
 static inline enum htlc_state htlc_state_in_db(enum htlc_state s)
@@ -231,9 +272,12 @@ static inline enum htlc_state htlc_state_in_db(enum htlc_state s)
 }
 
 struct forwarding {
+	/* channel_out is all-zero if unknown. */
 	struct short_channel_id channel_in, channel_out;
+	/* htlc_id_out is NULL if unknown. */
+	u64 htlc_id_in, *htlc_id_out;
 	struct amount_msat msat_in, msat_out, fee;
-	struct sha256 *payment_hash;
+	enum forward_style forward_style;
 	enum forward_status status;
 	enum onion_wire failcode;
 	struct timeabs received_time;
@@ -292,6 +336,7 @@ struct wallet_payment {
 	struct list_node list;
 	u64 id;
 	u32 timestamp;
+	u32 *completed_at;
 
 	/* The combination of these three fields is unique: */
 	struct sha256 payment_hash;
@@ -317,11 +362,14 @@ struct wallet_payment {
 	/* The label of the payment. Must support `tal_len` */
 	const char *label;
 
+	/* The description of the payment (used if invstring has hash). */
+	const char *description;
+
 	/* If we could not decode the fail onion, just add it here. */
 	const u8 *failonion;
 
-	/* If we are associated with an internal offer */
-	struct sha256 *local_offer_id;
+	/* If we are associated with an internal invoice_request */
+	struct sha256 *local_invreq_id;
 };
 
 struct outpoint {
@@ -491,24 +539,6 @@ struct utxo *wallet_utxo_get(const tal_t *ctx, struct wallet *w,
 			     const struct bitcoin_outpoint *outpoint);
 
 /**
- * wallet_select_specific - Select utxos given an array of txids and an array of outputs index
- *
- * Returns an array of `utxo` structs.
- */
-const struct utxo **wallet_select_specific(const tal_t *ctx, struct wallet *w,
-					struct bitcoin_txid **txids,
-					u32 **outnums);
-
-/**
- * wallet_confirm_utxos - Once we've spent a set of utxos, mark them confirmed.
- *
- * May be called once the transaction spending these UTXOs has been
- * broadcast. If something fails use `tal_free(utxos)` instead to undo
- * the reservation.
- */
-void wallet_confirm_utxos(struct wallet *w, const struct utxo **utxos);
-
-/**
  * wallet_can_spend - Do we have the private key matching this scriptpubkey?
  *
  * FIXME: This is very slow with lots of inputs!
@@ -536,17 +566,6 @@ bool wallet_shachain_add_hash(struct wallet *wallet,
 			      struct wallet_shachain *chain,
 			      uint64_t index,
 			      const struct secret *hash);
-
-/**
- * wallet_shachain_load -- Load an existing shachain from the wallet.
- *
- * @wallet: the wallet to load from
- * @id: the shachain id to load
- * @chain: where to load the shachain into
- */
-bool wallet_shachain_load(struct wallet *wallet, u64 id,
-			  struct wallet_shachain *chain);
-
 
 /**
  * wallet_get_uncommitted_channel_dbid -- get a unique channel dbid
@@ -618,12 +637,6 @@ struct state_change_entry *wallet_state_change_get(struct wallet *w,
 void wallet_peer_delete(struct wallet *w, u64 peer_dbid);
 
 /**
- * wallet_channel_config_load -- Load channel_config from database into cc
- */
-bool wallet_channel_config_load(struct wallet *w, const u64 id,
-				struct channel_config *cc);
-
-/**
  * wallet_init_channels -- Loads active channels into peers
  *    and inits the dbid counter for next channel.
  *
@@ -672,6 +685,7 @@ void wallet_blocks_heights(struct wallet *w, u32 def, u32 *min, u32 *max);
  * wallet_extract_owned_outputs - given a tx, extract all of our outputs
  */
 int wallet_extract_owned_outputs(struct wallet *w, const struct wally_tx *tx,
+				 bool is_coinbase,
 				 const u32 *blockheight,
 				 struct amount_sat *total);
 
@@ -928,6 +942,9 @@ bool wallet_invoice_find_unpaid(struct wallet *wallet,
 bool wallet_invoice_delete(struct wallet *wallet,
 			   struct invoice invoice);
 
+bool wallet_invoice_delete_description(struct wallet *wallet,
+				       struct invoice invoice);
+
 /**
  * wallet_invoice_delete_expired - Delete all expired invoices
  * with expiration time less than or equal to the given.
@@ -938,16 +955,6 @@ bool wallet_invoice_delete(struct wallet *wallet,
 void wallet_invoice_delete_expired(struct wallet *wallet,
 				   u64 max_expiry_time);
 
-/**
- * wallet_invoice_autoclean - Set up a repeating autoclean of
- * expired invoices.
- * Cleans (deletes) expired invoices every @cycle_seconds.
- * Clean only those invoices that have been expired for at
- * least @expired_by seconds or more.
- */
-void wallet_invoice_autoclean(struct wallet * wallet,
-			      u64 cycle_seconds,
-			      u64 expired_by);
 
 /**
  * wallet_invoice_iterate - Iterate over all existing invoices
@@ -1044,9 +1051,9 @@ void wallet_invoice_waitone(const tal_t *ctx,
  * @invoice - the invoice to get details on.
  * @return pointer to the invoice details allocated off of `ctx`.
  */
-const struct invoice_details *wallet_invoice_details(const tal_t *ctx,
-						     struct wallet *wallet,
-						     struct invoice invoice);
+struct invoice_details *wallet_invoice_details(const tal_t *ctx,
+					       struct wallet *wallet,
+					       struct invoice invoice);
 
 /**
  * wallet_htlc_stubs - Retrieve HTLC stubs for the given channel
@@ -1085,19 +1092,14 @@ void wallet_payment_store(struct wallet *wallet,
 /**
  * wallet_payment_delete - Remove a payment
  *
- * Removes the payment from the database.
+ * Removes the payment from the database by hash; groupid and partid
+ * may both be NULL to delete all entries, otherwise deletes only that
+ * group/partid.
  */
 void wallet_payment_delete(struct wallet *wallet,
 			   const struct sha256 *payment_hash,
-			   u64 partid);
-
-/**
- * wallet_payment_delete_by_hash - Remove a payment
- *
- * Removes the payment from the database by hash; if it is a MPP payment
- * it remove all parts with a single query.
- */
-void wallet_payment_delete_by_hash(struct wallet *wallet, const struct sha256 *payment_hash);
+			   const u64 *groupid,
+			   const u64 *partid);
 
 /**
  * wallet_local_htlc_out_delete - Remove a local outgoing failed HTLC
@@ -1188,15 +1190,17 @@ void wallet_payment_set_failinfo(struct wallet *wallet,
  */
 const struct wallet_payment **wallet_payment_list(const tal_t *ctx,
 						  struct wallet *wallet,
-						  const struct sha256 *payment_hash,
-						  enum wallet_payment_status *status);
+						  const struct sha256 *payment_hash)
+	NON_NULL_ARGS(2);
+
 
 /**
- * wallet_payments_by_offer - Retrieve a list of payments for this local_offer_id
+ * wallet_payments_by_invoice_request - Retrieve a list of payments for this local_invreq_id
  */
-const struct wallet_payment **wallet_payments_by_offer(const tal_t *ctx,
-						       struct wallet *wallet,
-						       const struct sha256 *local_offer_id);
+const struct wallet_payment **
+wallet_payments_by_invoice_request(const tal_t *ctx,
+				   struct wallet *wallet,
+				   const struct sha256 *local_invreq_id);
 
 /**
  * wallet_htlc_sigs_save - Store the latest HTLC sigs for the channel
@@ -1205,13 +1209,15 @@ void wallet_htlc_sigs_save(struct wallet *w, u64 channel_id,
 			   const struct bitcoin_signature *htlc_sigs);
 
 /**
- * wallet_network_check - Check that the wallet is setup for this chain
+ * wallet_sanity_check - Check that the wallet is setup for this node_id and chain
  *
  * Ensure that the genesis_hash from the chainparams matches the
- * genesis_hash with which the DB was initialized. Returns false if
- * the check failed, i.e., if the genesis hashes do not match.
+ * genesis_hash with which the DB was initialized, and that the HSM
+ * gave us the same node_id as the one is the db.
+ *
+ * Returns false if the checks failed.
  */
-bool wallet_network_check(struct wallet *w);
+bool wallet_sanity_check(struct wallet *w);
 
 /**
  * wallet_block_add - Add a block to the blockchain tracked by this wallet
@@ -1359,6 +1365,7 @@ struct channeltx *wallet_channeltxs_get(struct wallet *w, const tal_t *ctx,
  * Add of update a forwarded_payment
  */
 void wallet_forwarded_payment_add(struct wallet *w, const struct htlc_in *in,
+				  enum forward_style forward_style,
 				  const struct short_channel_id *scid_out,
 				  const struct htlc_out *out,
 				  enum forward_status state,
@@ -1379,6 +1386,15 @@ const struct forwarding *wallet_forwarded_payments_get(struct wallet *w,
 						       const struct short_channel_id *chan_out);
 
 /**
+ * Delete a particular forward entry
+ * Returns false if not found
+ */
+bool wallet_forward_delete(struct wallet *w,
+			   const struct short_channel_id *chan_in,
+			   const u64 *htlc_id,
+			   enum forward_status state);
+
+/**
  * Load remote_ann_node_sig and remote_ann_bitcoin_sig
  *
  * @ctx: allocation context for the return value
@@ -1391,39 +1407,6 @@ bool wallet_remote_ann_sigs_load(const tal_t *ctx, struct wallet *w, u64 id,
 				 secp256k1_ecdsa_signature **remote_ann_node_sig,
 				 secp256k1_ecdsa_signature **remote_ann_bitcoin_sig);
 
-/**
- * wallet_clean_utxos: clean up any reserved UTXOs on restart.
- * @w: wallet
- *
- * If we crash, it's unclear if we have actually used the inputs.  eg. if
- * we crash around transaction broadcast.
- *
- * We ask bitcoind to clarify in this case.
- */
-void wallet_clean_utxos(struct wallet *w, struct bitcoind *bitcoind);
-
-/* Operations for unreleased transactions */
-struct unreleased_tx *find_unreleased_tx(struct wallet *w,
-					 const struct bitcoin_txid *txid);
-void remove_unreleased_tx(struct unreleased_tx *utx);
-void add_unreleased_tx(struct wallet *w, struct unreleased_tx *utx);
-
-/* These will touch the db, so need to be explicitly freed. */
-void free_unreleased_txs(struct wallet *w);
-
-/* wallet_persist_utxo_reservation - Removes destructor
- *
- * Persists the reservation in the database (until a restart)
- * instead of clearing the reservation when the utxo object
- * is destroyed */
-void wallet_persist_utxo_reservation(struct wallet *w, const struct utxo **utxos);
-
-/* wallet_unreserve_output - Unreserve a utxo
- *
- * We unreserve utxos so that they can be spent elsewhere.
- * */
-bool wallet_unreserve_output(struct wallet *w,
-			     const struct bitcoin_outpoint *outpoint);
 /**
  * Get a list of transactions that we track in the wallet.
  *
@@ -1560,7 +1543,7 @@ char *wallet_offer_find(const tal_t *ctx,
  * @w: the wallet
  * @offer_id: the first offer id (if returns non-NULL)
  *
- * Returns pointer to hand as @stmt to wallet_offer_next(), or NULL.
+ * Returns pointer to hand as @stmt to wallet_offer_id_next(), or NULL.
  * If you choose not to call wallet_offer_id_next() you must free it!
  */
 struct db_stmt *wallet_offer_id_first(struct wallet *w,
@@ -1599,6 +1582,85 @@ enum offer_status wallet_offer_disable(struct wallet *w,
  * Must exist and be active.
  */
 void wallet_offer_mark_used(struct db *db, const struct sha256 *offer_id)
+	NO_NULL_ARGS;
+
+/**
+ * Store an offer in the database.
+ * @w: the wallet
+ * @invreq_id: the hash of the invoice_request.
+ * @bolt12: invoice_request as text.
+ * @label: optional label for this invoice_request.
+ * @status: OFFER_SINGLE_USE or OFFER_MULTIPLE_USE
+ */
+bool wallet_invoice_request_create(struct wallet *w,
+				   const struct sha256 *invreq_id,
+				   const char *bolt12,
+				   const struct json_escape *label,
+				   enum offer_status status)
+	NON_NULL_ARGS(1,2,3);
+
+/**
+ * Retrieve an invoice_request from the database.
+ * @ctx: the tal context to allocate return from.
+ * @w: the wallet
+ * @invreq_id: the merkle root, as used for signing (must be unique)
+ * @label: the label of the invoice_request, set to NULL if none (or NULL)
+ * @status: set if succeeds (or NULL)
+ *
+ * If @invreq_id is found, returns the bolt12 text, sets @label and
+ * @state.  Otherwise returns NULL.
+ */
+char *wallet_invoice_request_find(const tal_t *ctx,
+			struct wallet *w,
+			const struct sha256 *invreq_id,
+			const struct json_escape **label,
+			enum offer_status *status)
+	NON_NULL_ARGS(1,2,3);
+
+/**
+ * Iterate through all the invoice_requests.
+ * @w: the wallet
+ * @invreq_id: the first invoice_request id (if returns non-NULL)
+ *
+ * Returns pointer to hand as @stmt to wallet_invreq_id_next(), or NULL.
+ * If you choose not to call wallet_invreq_id_next() you must free it!
+ */
+struct db_stmt *wallet_invreq_id_first(struct wallet *w,
+				      struct sha256 *invreq_id);
+
+/**
+ * Iterate through all the invoice_requests.
+ * @w: the wallet
+ * @stmt: return from wallet_invreq_id_first() or previous wallet_invreq_id_next()
+ * @invreq_id: the next invoice_request id (if returns non-NULL)
+ *
+ * Returns NULL once we're out of invoice_requests.  If you choose not to call
+ * wallet_invreq_id_next() again you must free return.
+ */
+struct db_stmt *wallet_invreq_id_next(struct wallet *w,
+				     struct db_stmt *stmt,
+				     struct sha256 *invreq_id);
+
+/**
+ * Disable an invoice_request in the database.
+ * @w: the wallet
+ * @invreq_id: the merkle root, as used for signing (must be unique)
+ * @s: the current status (must be active).
+ *
+ * Must exist.  Returns new status. */
+enum offer_status wallet_invoice_request_disable(struct wallet *w,
+						 const struct sha256 *invreq_id,
+						 enum offer_status s)
+	NO_NULL_ARGS;
+
+/**
+ * Mark an invoice_request in the database used.
+ * @w: the wallet
+ * @invreq_id: the merkle root, as used for signing (must be unique)
+ *
+ * Must exist and be active.
+ */
+void wallet_invoice_request_mark_used(struct db *db, const struct sha256 *invreq_id)
 	NO_NULL_ARGS;
 
 /**
@@ -1664,4 +1726,40 @@ struct db_stmt *wallet_datastore_next(const tal_t *ctx,
 				      const u8 **data,
 				      u64 *generation);
 
+/**
+ * Iterate through the htlcs table.
+ * @w: the wallet
+ * @chan: optional channel to filter by
+ *
+ * Returns pointer to hand as @iter to wallet_htlcs_next(), or NULL.
+ * If you choose not to call wallet_htlcs_next() you must free it!
+ */
+struct wallet_htlc_iter *wallet_htlcs_first(const tal_t *ctx,
+					    struct wallet *w,
+					    const struct channel *chan,
+					    struct short_channel_id *scid,
+					    u64 *htlc_id,
+					    int *cltv_expiry,
+					    enum side *owner,
+					    struct amount_msat *msat,
+					    struct sha256 *payment_hash,
+					    enum htlc_state *hstate);
+
+/**
+ * Iterate through the htlcs table.
+ * @w: the wallet
+ * @iter: the previous iter.
+ *
+ * Returns pointer to hand as @iter to wallet_htlcs_next(), or NULL.
+ * If you choose not to call wallet_htlcs_next() you must free it!
+ */
+struct wallet_htlc_iter *wallet_htlcs_next(struct wallet *w,
+					   struct wallet_htlc_iter *iter,
+					   struct short_channel_id *scid,
+					   u64 *htlc_id,
+					   int *cltv_expiry,
+					   enum side *owner,
+					   struct amount_msat *msat,
+					   struct sha256 *payment_hash,
+					   enum htlc_state *hstate);
 #endif /* LIGHTNING_WALLET_WALLET_H */

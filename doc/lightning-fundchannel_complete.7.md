@@ -28,8 +28,9 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **channel_id** (hex): The channel_id of the resulting channel (always 64 characters)
-- **commitments_secured** (boolean): Indication that channel is safe to use (always *true*)
+
+- **channel\_id** (hex): The channel_id of the resulting channel (always 64 characters)
+- **commitments\_secured** (boolean): Indication that channel is safe to use (always *true*)
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -61,4 +62,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:29c1e2bbc878ffb6b7e41f552afc608af58e335a329c79d09680e8e2995ff0d5)
+[comment]: # ( SHA256STAMP:6852cb54595920fa692b6c0a816b44efa7623a3fd12af90602a137f7de0fc57c)

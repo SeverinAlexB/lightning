@@ -1,9 +1,11 @@
+#include "config.h"
 #include <bitcoin/psbt.h>
 #include <ccan/array_size/array_size.h>
 #include <common/addr.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
 #include <common/memleak.h>
+#include <common/psbt_open.h>
 #include <common/pseudorand.h>
 #include <common/type_to_string.h>
 #include <plugins/libplugin.h>
@@ -12,6 +14,7 @@
 struct tx_output {
 	struct amount_sat amount;
 	const u8 *script;
+	bool is_to_external;
 };
 
 struct txprepare {
@@ -77,6 +80,9 @@ static struct command_result *param_outputs(struct command *cmd,
 	json_for_each_arr(i, t, tok) {
 		enum address_parse_result res;
 		struct tx_output *out = &txp->outputs[i];
+
+		/* We assume these are accounted for elsewhere */
+		out->is_to_external = false;
 
 		/* output format: {destination: amount} */
 		if (t->type != JSMN_OBJECT)
@@ -171,7 +177,7 @@ static struct command_result *signpsbt_done(struct command *cmd,
 static struct command_result *finish_txprepare(struct command *cmd,
 					       struct txprepare *txp)
 {
-	struct json_stream *out;
+	struct json_stream *js;
 	struct unreleased_tx *utx;
 
 	/* Add the outputs they gave us */
@@ -189,6 +195,11 @@ static struct command_result *finish_txprepare(struct command *cmd,
 							   struct amount_sat,
 							   &txp->outputs[i].amount));
 		psbt_add_output(txp->psbt, out, i);
+
+		if (txp->outputs[i].is_to_external)
+			psbt_output_mark_as_external(txp->psbt,
+						     &txp->psbt->outputs[i]);
+
 		wally_tx_output_free(out);
 	}
 
@@ -214,11 +225,11 @@ static struct command_result *finish_txprepare(struct command *cmd,
 	}
 
 	list_add(&unreleased_txs, &utx->list);
-	out = jsonrpc_stream_success(cmd);
-	json_add_hex_talarr(out, "unsigned_tx", linearize_wtx(tmpctx, utx->tx));
-	json_add_txid(out, "txid", &utx->txid);
-	json_add_psbt(out, "psbt", utx->psbt);
-	return command_finished(cmd, out);
+	js = jsonrpc_stream_success(cmd);
+	json_add_hex_talarr(js, "unsigned_tx", linearize_wtx(tmpctx, utx->tx));
+	json_add_txid(js, "txid", &utx->txid);
+	json_add_psbt(js, "psbt", utx->psbt);
+	return command_finished(cmd, js);
 }
 
 /* newaddr has given us a change address. */
@@ -238,6 +249,7 @@ static struct command_result *newaddr_done(struct command *cmd,
 		sizeof(txp->outputs[0]) * (num - pos));
 
 	txp->outputs[pos].amount = txp->change_amount;
+	txp->outputs[pos].is_to_external = false;
 	if (json_to_address_scriptpubkey(txp, chainparams, buf, addr,
 					 &txp->outputs[pos].script)
 	    != ADDRESS_PARSE_SUCCESS) {
@@ -270,6 +282,7 @@ static struct command_result *psbt_created(struct command *cmd,
 {
 	const jsmntok_t *psbttok;
 	struct out_req *req;
+	struct amount_msat excess_msat;
 	struct amount_sat excess;
 	u32 weight;
 
@@ -288,8 +301,9 @@ static struct command_result *psbt_created(struct command *cmd,
 				    result->end - result->start,
 				    buf + result->start);
 
-	if (!json_to_sat(buf, json_get_member(buf, result, "excess_msat"),
-			 &excess))
+	if (!json_to_msat(buf, json_get_member(buf, result, "excess_msat"),
+			  &excess_msat)
+	    || !amount_msat_to_sat(&excess, excess_msat))
 		return command_fail(cmd, LIGHTNINGD,
 				    "Unparsable excess_msat: '%.*s'",
 				    result->end - result->start,
@@ -366,7 +380,7 @@ static struct command_result *txprepare_continue(struct command *cmd,
 	}
 
 	if (txp->all_output_idx == -1)
-		json_add_amount_sat_only(req->js, "satoshi", txp->output_total);
+		json_add_sats(req->js, "satoshi", txp->output_total);
 	else
 		json_add_string(req->js, "satoshi", "all");
 
@@ -515,6 +529,7 @@ static struct command_result *json_withdraw(struct command *cmd,
 	}
 	txp->outputs[0].amount = *amount;
 	txp->outputs[0].script = scriptpubkey;
+	txp->outputs[0].is_to_external = true;
 	txp->weight = bitcoin_tx_core_weight(1, tal_count(txp->outputs))
 		+ bitcoin_tx_output_weight(tal_bytelen(scriptpubkey));
 
@@ -555,7 +570,7 @@ static const struct plugin_command commands[] = {
 #if DEVELOPER
 static void mark_unreleased_txs(struct plugin *plugin, struct htable *memtable)
 {
-	memleak_remove_region(memtable, &unreleased_txs, sizeof(unreleased_txs));
+	memleak_scan_list_head(memtable, &unreleased_txs);
 }
 #endif
 

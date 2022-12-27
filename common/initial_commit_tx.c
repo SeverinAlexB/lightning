@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/script.h>
 #include <ccan/array_size/array_size.h>
 #include <common/initial_commit_tx.h>
@@ -235,26 +236,27 @@ struct bitcoin_tx *initial_commit_tx(const tal_t *ctx,
 		 * If `option_anchors` applies to the commitment
 		 * transaction, the `to_remote` output is encumbered by a one
 		 * block csv lock.
-		 *    <remote_pubkey> OP_CHECKSIGVERIFY 1 OP_CHECKSEQUENCEVERIFY
+		 *    <remotepubkey> OP_CHECKSIGVERIFY 1 OP_CHECKSEQUENCEVERIFY
 		 *
 		 *...
 		 * Otherwise, this output is a simple P2WPKH to `remotepubkey`.
 		 */
 		u8 *scriptpubkey;
 		int pos;
+		u8 *redeem;
 
 		amount = amount_msat_to_sat_round_down(other_pay);
 		if (option_anchor_outputs) {
-			const u8 *redeem
-				= anchor_to_remote_redeem(tmpctx,
+			redeem = anchor_to_remote_redeem(tmpctx,
 						&keyset->other_payment_key,
 						(!side) == lessor ? csv_lock : 1);
 			scriptpubkey = scriptpubkey_p2wsh(tmpctx, redeem);
 		} else {
+			redeem = NULL;
 			scriptpubkey = scriptpubkey_p2wpkh(tmpctx,
 							   &keyset->other_payment_key);
 		}
-		pos = bitcoin_tx_add_output(tx, scriptpubkey, NULL, amount);
+		pos = bitcoin_tx_add_output(tx, scriptpubkey, redeem, amount);
 		assert(pos == n);
 		output_order[n] = dummy_remote;
 		n++;
@@ -289,7 +291,7 @@ struct bitcoin_tx *initial_commit_tx(const tal_t *ctx,
 	/* BOLT #3:
 	 *
 	 * 9. Sort the outputs into [BIP 69+CLTV
-	 *    order](#transaction-input-and-output-ordering)
+	 *    order](#transaction-output-ordering)
 	 */
 	permute_outputs(tx, NULL, output_order);
 

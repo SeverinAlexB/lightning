@@ -1,3 +1,4 @@
+#include "config.h"
 #include <ccan/err/err.h>
 #include <ccan/opt/opt.h>
 #include <ccan/time/time.h>
@@ -102,10 +103,9 @@ int main(int argc, char *argv[])
 		for (n = gossmap_first_node(map);
 		     n;
 		     n = gossmap_next_node(map, n)) {
-			struct node_id srcid, dstid;
+			struct node_id srcid;
 
 			gossmap_node_get_id(map, n, &srcid);
-			gossmap_node_get_id(map, dst, &dstid);
 			printf("# %s->%s\n",
 			       type_to_string(tmpctx, struct node_id, &srcid),
 			       type_to_string(tmpctx, struct node_id, &dstid));

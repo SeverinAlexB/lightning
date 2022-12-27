@@ -4,7 +4,7 @@ lightning-ping -- Command to check if a node is up.
 SYNOPSIS
 --------
 
-**ping** *id* \[len\] \[pongbytes\]
+**ping** *id* [*len*] [*pongbytes*]
 
 DESCRIPTION
 -----------
@@ -37,6 +37,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **totlen** (u16): the answer length of the reply message (including header: 0 means no reply expected)
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -69,4 +70,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:aa91cd20bea0156c4b2b2ca377945c383ad3ae06d31b972fbce9fc1999cfbc70)
+[comment]: # ( SHA256STAMP:f33aa4d93ca623ff7cd5e4062e0533f617b00372797f8ee0d2498479d2fe08a9)

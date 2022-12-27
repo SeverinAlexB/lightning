@@ -1,9 +1,12 @@
 #include "config.h"
+#include "config_test.h"
 #include <common/amount.h>
 #include <common/bigsize.h>
 #include <common/channel_id.h>
 #include <common/json_stream.h>
 #include <common/node_id.h>
+#include <common/setup.h>
+#include <common/wireaddr.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 
@@ -17,7 +20,7 @@ int test_printf(const char *format, ...);
 int test_chdir(const char *path);
 
 #define main test_main
-#define read test_read
+#define cli_read test_read
 #define socket test_socket
 #define connect test_connect
 #define getpid test_getpid
@@ -69,22 +72,12 @@ struct amount_sat fromwire_amount_sat(const u8 **cursor UNNEEDED, size_t *max UN
 bigsize_t fromwire_bigsize(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
 { fprintf(stderr, "fromwire_bigsize called!\n"); abort(); }
 /* Generated stub for fromwire_channel_id */
-void fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
+bool fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 			 struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "fromwire_channel_id called!\n"); abort(); }
 /* Generated stub for fromwire_node_id */
 void fromwire_node_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, struct node_id *id UNNEEDED)
 { fprintf(stderr, "fromwire_node_id called!\n"); abort(); }
-/* Generated stub for json_add_member */
-void json_add_member(struct json_stream *js UNNEEDED,
-		     const char *fieldname UNNEEDED,
-		     bool quote UNNEEDED,
-		     const char *fmt UNNEEDED, ...)
-{ fprintf(stderr, "json_add_member called!\n"); abort(); }
-/* Generated stub for json_member_direct */
-char *json_member_direct(struct json_stream *js UNNEEDED,
-			 const char *fieldname UNNEEDED, size_t extra UNNEEDED)
-{ fprintf(stderr, "json_member_direct called!\n"); abort(); }
 /* Generated stub for log_level_name */
 const char *log_level_name(enum log_level level UNNEEDED)
 { fprintf(stderr, "log_level_name called!\n"); abort(); }
@@ -158,7 +151,7 @@ ssize_t test_read(int fd UNUSED, void *buf, size_t len)
 #define NUM_ENTRIES (137772/2)
 
 #define HEADER "{ \"jsonrpc\": \"2.0\",\n"				\
-	       "    \"id\": \"lightning-cli-9999\",\n"			\
+	       "    \"id\": \"cli:test#9999\",\n"			\
 	       "    \"result\" : {\n"					\
 	       "        \"creation_time\" : \"1515999039.806099043\",\n" \
 	       "        \"bytes_used\" : 10787759,\n"			\
@@ -171,7 +164,7 @@ ssize_t test_read(int fd UNUSED, void *buf, size_t len)
 
 int main(int argc UNUSED, char *argv[])
 {
-	setup_locale();
+	common_setup(argv[0]);
 
 	char *fake_argv[] = { argv[0], "--lightning-dir=/tmp/", "test", "-N", "none", NULL };
 
@@ -200,7 +193,6 @@ int main(int argc UNUSED, char *argv[])
 	max_read_return = -1;
 	assert(test_main(5, fake_argv) == 0);
 	tal_free(response);
-	assert(!taken_any());
-	take_cleanup();
+	common_shutdown();
 	return 0;
 }

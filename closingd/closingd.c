@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/script.h>
 #include <ccan/cast/cast.h>
 #include <ccan/fdpass/fdpass.h>
@@ -5,15 +6,14 @@
 #include <closingd/closingd_wiregen.h>
 #include <common/close_tx.h>
 #include <common/closing_fee.h>
-#include <common/crypto_sync.h>
 #include <common/derive_basepoints.h>
 #include <common/htlc.h>
 #include <common/memleak.h>
 #include <common/peer_billboard.h>
 #include <common/peer_failed.h>
+#include <common/peer_io.h>
 #include <common/per_peer_state.h>
 #include <common/read_peer_msg.h>
-#include <common/socket_close.h>
 #include <common/status.h>
 #include <common/subdaemon.h>
 #include <common/type_to_string.h>
@@ -26,13 +26,13 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <wire/common_wiregen.h>
+#include <wally_bip32.h>
 #include <wire/peer_wire.h>
 #include <wire/wire_sync.h>
 
-/* stdin == requests, 3 == peer, 4 = gossip, 5 = gossip_store, 6 = hsmd */
+/* stdin == requests, 3 == peer, 4 = hsmd */
 #define REQ_FD STDIN_FILENO
-#define HSM_FD 6
+#define HSM_FD 4
 
 static void notify(enum log_level level, const char *fmt, ...)
 {
@@ -52,6 +52,8 @@ static struct bitcoin_tx *close_tx(const tal_t *ctx,
 				   const struct chainparams *chainparams,
 				   struct per_peer_state *pps,
 				   const struct channel_id *channel_id,
+				   u32 *local_wallet_index,
+				   const struct ext_key *local_wallet_ext_key,
 				   u8 *scriptpubkey[NUM_SIDES],
 				   const struct bitcoin_outpoint *funding,
 				   struct amount_sat funding_sats,
@@ -84,6 +86,7 @@ static struct bitcoin_tx *close_tx(const tal_t *ctx,
 	/* FIXME: We need to allow this! */
 	tx = create_close_tx(ctx,
 			     chainparams,
+			     local_wallet_index, local_wallet_ext_key,
 			     scriptpubkey[LOCAL], scriptpubkey[REMOTE],
 			     funding_wscript,
 			     funding,
@@ -118,24 +121,10 @@ static u8 *closing_read_peer_msg(const tal_t *ctx,
 {
 	for (;;) {
 		u8 *msg;
-		bool from_gossipd;
 
 		clean_tmpctx();
-		msg = peer_or_gossip_sync_read(ctx, pps, &from_gossipd);
-		if (from_gossipd) {
-			handle_gossip_msg(pps, take(msg));
-			continue;
-		}
-		/* Handle custommsgs */
-		enum peer_wire type = fromwire_peektype(msg);
-		if (type % 2 == 1 && !peer_wire_is_defined(type)) {
-			/* The message is not part of the messages we know
-			 * how to handle. Assume is custommsg, forward it
-			 * to master. */
-			wire_sync_write(REQ_FD, take(towire_custommsg_in(NULL, msg)));
-			continue;
-		}
-		if (!handle_peer_gossip_or_error(pps, channel_id, false, msg))
+		msg = peer_read(ctx, pps);
+		if (!handle_peer_error(pps, channel_id, msg))
 			return msg;
 	}
 }
@@ -145,6 +134,8 @@ static void send_offer(struct per_peer_state *pps,
 		       const struct channel_id *channel_id,
 		       const struct pubkey funding_pubkey[NUM_SIDES],
 		       const u8 *funding_wscript,
+		       u32 *local_wallet_index,
+		       const struct ext_key *local_wallet_ext_key,
 		       u8 *scriptpubkey[NUM_SIDES],
 		       const struct bitcoin_outpoint *funding,
 		       struct amount_sat funding_sats,
@@ -167,6 +158,8 @@ static void send_offer(struct per_peer_state *pps,
 	 *     #3](03-transactions.md#closing-transaction).
 	 */
 	tx = close_tx(tmpctx, chainparams, pps, channel_id,
+		      local_wallet_index,
+		      local_wallet_ext_key,
 		      scriptpubkey,
 		      funding,
 		      funding_sats,
@@ -213,7 +206,7 @@ static void send_offer(struct per_peer_state *pps,
 	msg = towire_closing_signed(NULL, channel_id, fee_to_offer, &our_sig.s,
 				    close_tlvs);
 
-	sync_crypto_write(pps, take(msg));
+	peer_write(pps, take(msg));
 }
 
 static void tell_master_their_offer(const struct bitcoin_signature *their_sig,
@@ -240,6 +233,8 @@ receive_offer(struct per_peer_state *pps,
 	      const struct channel_id *channel_id,
 	      const struct pubkey funding_pubkey[NUM_SIDES],
 	      const u8 *funding_wscript,
+	      u32 *local_wallet_index,
+	      const struct ext_key *local_wallet_ext_key,
 	      u8 *scriptpubkey[NUM_SIDES],
 	      const struct bitcoin_outpoint *funding,
 	      struct amount_sat funding_sats,
@@ -265,11 +260,11 @@ receive_offer(struct per_peer_state *pps,
 		/* BOLT #2:
 		 *
 		 *  - upon reconnection:
-		 *     - MUST ignore any redundant `funding_locked` it receives.
+		 *     - MUST ignore any redundant `channel_ready` it receives.
 		 */
 		/* This should only happen if we've made no commitments, but
 		 * we don't have to check that: it's their problem. */
-		if (fromwire_peektype(msg) == WIRE_FUNDING_LOCKED)
+		if (fromwire_peektype(msg) == WIRE_CHANNEL_READY)
 			msg = tal_free(msg);
 		/* BOLT #2:
 		 *     - if it has sent a previous `shutdown`:
@@ -283,10 +278,9 @@ receive_offer(struct per_peer_state *pps,
 	} while (!msg);
 
 	their_sig.sighash_type = SIGHASH_ALL;
-	close_tlvs = tlv_closing_signed_tlvs_new(msg);
-	if (!fromwire_closing_signed(msg, &their_channel_id,
+	if (!fromwire_closing_signed(msg, msg, &their_channel_id,
 				     &received_fee, &their_sig.s,
-				     close_tlvs))
+				     &close_tlvs))
 		peer_failed_warn(pps, channel_id,
 				 "Expected closing_signed: %s",
 				 tal_hex(tmpctx, msg));
@@ -297,9 +291,12 @@ receive_offer(struct per_peer_state *pps,
 	 *   - if the `signature` is not valid for either variant of closing transaction
 	 *   specified in [BOLT #3](03-transactions.md#closing-transaction)
 	 *   OR non-compliant with LOW-S-standard rule...:
-	 *     - MUST fail the connection.
+	 *     - MUST send a `warning` and close the connection, or send an
+	 *	 `error` and fail the channel.
 	 */
 	tx = close_tx(tmpctx, chainparams, pps, channel_id,
+		      local_wallet_index,
+		      local_wallet_ext_key,
 		      scriptpubkey,
 		      funding,
 		      funding_sats,
@@ -330,6 +327,8 @@ receive_offer(struct per_peer_state *pps,
 		 *   - MAY eliminate its own output.
 		 */
 		trimmed = close_tx(tmpctx, chainparams, pps, channel_id,
+				   local_wallet_index,
+				   local_wallet_ext_key,
 				   scriptpubkey,
 				   funding,
 				   funding_sats,
@@ -555,14 +554,12 @@ static void closing_dev_memleak(const tal_t *ctx,
 				u8 *scriptpubkey[NUM_SIDES],
 				const u8 *funding_wscript)
 {
-	struct htable *memtable;
+	struct htable *memtable = memleak_start(tmpctx);
 
-	memtable = memleak_find_allocations(tmpctx, NULL, NULL);
-
-	memleak_remove_pointer(memtable, ctx);
-	memleak_remove_pointer(memtable, scriptpubkey[LOCAL]);
-	memleak_remove_pointer(memtable, scriptpubkey[REMOTE]);
-	memleak_remove_pointer(memtable, funding_wscript);
+	memleak_ptr(memtable, ctx);
+	memleak_ptr(memtable, scriptpubkey[LOCAL]);
+	memleak_ptr(memtable, scriptpubkey[REMOTE]);
+	memleak_ptr(memtable, funding_wscript);
 
 	dump_memleak(memtable, memleak_status_broken);
 }
@@ -574,18 +571,17 @@ static size_t closing_tx_weight_estimate(u8 *scriptpubkey[NUM_SIDES],
 					 const u8 *funding_wscript,
 					 const struct amount_sat *out,
 					 struct amount_sat funding_sats,
-					 struct amount_sat dust_limit)
+					 struct amount_sat dust_limit,
+					 u32 *local_wallet_index,
+					 const struct ext_key *local_wallet_ext_key)
 {
 	/* We create a dummy close */
 	struct bitcoin_tx *tx;
 	struct bitcoin_outpoint dummy_funding;
-	struct bitcoin_signature dummy_sig;
-	struct privkey dummy_privkey;
-	struct pubkey dummy_pubkey;
-	u8 **witness;
 
 	memset(&dummy_funding, 0, sizeof(dummy_funding));
 	tx = create_close_tx(tmpctx, chainparams,
+			     local_wallet_index, local_wallet_ext_key,
 			     scriptpubkey[LOCAL], scriptpubkey[REMOTE],
 			     funding_wscript,
 			     &dummy_funding,
@@ -594,17 +590,8 @@ static size_t closing_tx_weight_estimate(u8 *scriptpubkey[NUM_SIDES],
 			     out[REMOTE],
 			     dust_limit);
 
-	/* Create a signature, any signature, so we can weigh fully "signed"
-	 * tx. */
-	dummy_sig.sighash_type = SIGHASH_ALL;
-	memset(&dummy_privkey, 1, sizeof(dummy_privkey));
-	sign_hash(&dummy_privkey, &dummy_funding.txid.shad, &dummy_sig.s);
-	pubkey_from_privkey(&dummy_privkey, &dummy_pubkey);
-	witness = bitcoin_witness_2of2(NULL, &dummy_sig, &dummy_sig,
-				       &dummy_pubkey, &dummy_pubkey);
-	bitcoin_tx_input_set_witness(tx, 0, take(witness));
-
-	return bitcoin_tx_weight(tx);
+	/* We will have to append the witness */
+	return bitcoin_tx_weight(tx) + bitcoin_tx_2of2_input_witness_weight();
 }
 
 /* Get the minimum and desired fees */
@@ -699,6 +686,8 @@ static void do_quickclose(struct amount_sat offer[NUM_SIDES],
 			  const struct channel_id *channel_id,
 			  const struct pubkey funding_pubkey[NUM_SIDES],
 			  const u8 *funding_wscript,
+			  u32 *local_wallet_index,
+			  const struct ext_key *local_wallet_ext_key,
 			  u8 *scriptpubkey[NUM_SIDES],
 			  const struct bitcoin_outpoint *funding,
 			  struct amount_sat funding_sats,
@@ -716,8 +705,10 @@ static void do_quickclose(struct amount_sat offer[NUM_SIDES],
 	/* BOLT #2:
 	 *   - if the message contains a `fee_range`:
 	 *     - if there is no overlap between that and its own `fee_range`:
-	 *       - SHOULD fail the connection
+	 *       - SHOULD send a warning
+	 *       - MUST fail the channel if it doesn't receive a satisfying `fee_range` after a reasonable amount of time
 	 */
+	/* (Note we satisfy the "MUST fail" by our close command unilteraltimeout) */
 	if (!get_overlap(our_feerange, their_feerange, &overlap)) {
 		peer_failed_warn(pps, channel_id,
 			       "Unable to agree on a feerate."
@@ -778,6 +769,7 @@ static void do_quickclose(struct amount_sat offer[NUM_SIDES],
 			offer[LOCAL] = offer[REMOTE];
 			send_offer(pps, chainparams,
 				   channel_id, funding_pubkey, funding_wscript,
+				   local_wallet_index, local_wallet_ext_key,
 				   scriptpubkey, funding,
 				   funding_sats, out, opener,
 				   our_dust_limit,
@@ -817,6 +809,7 @@ static void do_quickclose(struct amount_sat offer[NUM_SIDES],
 		}
 		send_offer(pps, chainparams,
 			   channel_id, funding_pubkey, funding_wscript,
+			   local_wallet_index, local_wallet_ext_key,
 			   scriptpubkey, funding,
 			   funding_sats, out, opener,
 			   our_dust_limit,
@@ -830,6 +823,7 @@ static void do_quickclose(struct amount_sat offer[NUM_SIDES],
 				= receive_offer(pps, chainparams,
 						channel_id, funding_pubkey,
 						funding_wscript,
+						local_wallet_index, local_wallet_ext_key,
 						scriptpubkey, funding,
 						funding_sats,
 						out, opener,
@@ -879,6 +873,8 @@ int main(int argc, char *argv[])
 	u32 min_feerate, initial_feerate, *max_feerate;
 	struct feerange feerange;
 	enum side opener;
+	u32 *local_wallet_index;
+	struct ext_key *local_wallet_ext_key;
 	u8 *scriptpubkey[NUM_SIDES], *funding_wscript;
 	u64 fee_negotiation_step;
 	u8 fee_negotiation_step_unit;
@@ -896,7 +892,6 @@ int main(int argc, char *argv[])
 	msg = wire_sync_read(tmpctx, REQ_FD);
 	if (!fromwire_closingd_init(ctx, msg,
 				    &chainparams,
-				    &pps,
 				    &channel_id,
 				    &funding,
 				    &funding_sats,
@@ -908,17 +903,19 @@ int main(int argc, char *argv[])
 				    &our_dust_limit,
 				    &min_feerate, &initial_feerate, &max_feerate,
 				    &commitment_fee,
+				    &local_wallet_index,
+				    &local_wallet_ext_key,
 				    &scriptpubkey[LOCAL],
 				    &scriptpubkey[REMOTE],
 				    &fee_negotiation_step,
 				    &fee_negotiation_step_unit,
 				    &use_quickclose,
-				    &dev_fast_gossip,
 				    &wrong_funding))
 		master_badmsg(WIRE_CLOSINGD_INIT, msg);
 
-	/* stdin == requests, 3 == peer, 4 = gossip, 5 = gossip_store, 6 = hsmd */
-	per_peer_state_set_fds(notleak(pps), 3, 4, 5);
+	/* stdin == requests, 3 == peer, 4 = hsmd */
+	pps = notleak(new_per_peer_state(ctx));
+	per_peer_state_set_fd(pps, 3);
 
 	funding_wscript = bitcoin_redeem_2of2(ctx,
 					      &funding_pubkey[LOCAL],
@@ -928,7 +925,9 @@ int main(int argc, char *argv[])
 	calc_fee_bounds(closing_tx_weight_estimate(scriptpubkey,
 						   funding_wscript,
 						   out, funding_sats,
-						   our_dust_limit),
+						   our_dust_limit,
+						   local_wallet_index,
+						   local_wallet_ext_key),
 			min_feerate, initial_feerate, max_feerate,
 			commitment_fee, funding_sats, opener,
 			&min_fee_to_accept, &offer[LOCAL], &max_fee_to_accept);
@@ -986,6 +985,7 @@ int main(int argc, char *argv[])
 		if (whose_turn == LOCAL) {
 			send_offer(pps, chainparams,
 				   &channel_id, funding_pubkey, funding_wscript,
+				   local_wallet_index, local_wallet_ext_key,
 				   scriptpubkey, &funding,
 				   funding_sats, out, opener,
 				   our_dust_limit,
@@ -1007,6 +1007,8 @@ int main(int argc, char *argv[])
 				= receive_offer(pps, chainparams,
 						&channel_id, funding_pubkey,
 						funding_wscript,
+						local_wallet_index,
+						local_wallet_ext_key,
 						scriptpubkey, &funding,
 						funding_sats,
 						out, opener,
@@ -1020,6 +1022,7 @@ int main(int argc, char *argv[])
 				do_quickclose(offer,
 					      pps, &channel_id, funding_pubkey,
 					      funding_wscript,
+					      local_wallet_index, local_wallet_ext_key,
 					      scriptpubkey,
 					      &funding,
 					      funding_sats, out, opener,
@@ -1053,6 +1056,8 @@ int main(int argc, char *argv[])
 						    fee_negotiation_step_unit);
 			send_offer(pps, chainparams, &channel_id,
 				   funding_pubkey, funding_wscript,
+				   local_wallet_index,
+				   local_wallet_ext_key,
 				   scriptpubkey, &funding,
 				   funding_sats, out, opener,
 				   our_dust_limit,
@@ -1069,6 +1074,8 @@ int main(int argc, char *argv[])
 				= receive_offer(pps, chainparams, &channel_id,
 						funding_pubkey,
 						funding_wscript,
+						local_wallet_index,
+						local_wallet_ext_key,
 						scriptpubkey, &funding,
 						funding_sats,
 						out, opener,
@@ -1093,14 +1100,13 @@ exit_thru_the_giftshop:
 	tal_free(our_feerange);
 	tal_free(their_feerange);
 	tal_free(max_feerate);
+	tal_free(local_wallet_index);
+	tal_free(local_wallet_ext_key);
 	closing_dev_memleak(ctx, scriptpubkey, funding_wscript);
 #endif
 
 	/* We're done! */
-	/* Properly close the channel first. */
-	if (!socket_close(pps->peer_fd))
-		status_unusual("Closing and draining peerfd gave error: %s",
-			       strerror(errno));
+
 	/* Sending the below will kill us! */
 	wire_sync_write(REQ_FD, take(towire_closingd_complete(NULL)));
 	tal_free(ctx);

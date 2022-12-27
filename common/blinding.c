@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/privkey.h>
 #include <bitcoin/pubkey.h>
 #include <common/blinding.h>
@@ -34,6 +35,6 @@ bool blinding_next_privkey(const struct privkey *e,
 			   struct privkey *next)
 {
 	*next = *e;
-	return secp256k1_ec_privkey_tweak_mul(secp256k1_ctx, next->secret.data,
+	return secp256k1_ec_seckey_tweak_mul(secp256k1_ctx, next->secret.data,
 					      h->u.u8) == 1;
 }

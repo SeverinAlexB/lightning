@@ -9,8 +9,9 @@ COMMON_SRC_NOGEN :=				\
 	common/bigsize.c			\
 	common/billboard.c			\
 	common/bip32.c				\
-	common/blinding.c			\
 	common/blindedpath.c			\
+	common/blindedpay.c			\
+	common/blinding.c			\
 	common/blockheight_states.c		\
 	common/bolt11.c				\
 	common/bolt11_json.c			\
@@ -19,11 +20,9 @@ COMMON_SRC_NOGEN :=				\
 	common/channel_config.c			\
 	common/channel_id.c			\
 	common/channel_type.c			\
-	common/coin_mvt.c			\
 	common/close_tx.c			\
+	common/coin_mvt.c			\
 	common/configdir.c			\
-	common/crypto_state.c			\
-	common/crypto_sync.c			\
 	common/cryptomsg.c			\
 	common/daemon.c				\
 	common/daemon_conn.c			\
@@ -36,8 +35,8 @@ COMMON_SRC_NOGEN :=				\
 	common/features.c			\
 	common/fee_states.c			\
 	common/fp16.c				\
-	common/gossip_rcvd_filter.c		\
 	common/gossip_store.c			\
+	common/gossmap.c			\
 	common/hash_u5.c			\
 	common/hmac.c				\
 	common/hsm_encryption.c			\
@@ -45,40 +44,43 @@ COMMON_SRC_NOGEN :=				\
 	common/htlc_trim.c			\
 	common/htlc_tx.c			\
 	common/htlc_wire.c			\
+	common/interactivetx.c			\
 	common/initial_channel.c		\
 	common/initial_commit_tx.c		\
-	common/io_lock.c			\
+	common/invoice_path_id.c		\
 	common/iso4217.c			\
-	common/json.c				\
-	common/json_helpers.c			\
+	common/json_filter.c			\
+	common/json_param.c			\
+	common/json_parse.c			\
+	common/json_parse_simple.c		\
 	common/json_stream.c			\
-	common/json_tok.c			\
 	common/key_derive.c			\
 	common/keyset.c				\
-	common/gossmap.c			\
 	common/lease_rates.c			\
 	common/memleak.c			\
 	common/msg_queue.c			\
 	common/node_id.c			\
-	common/onion.c				\
+	common/onion_decode.c			\
+	common/onion_encode.c			\
 	common/onionreply.c			\
-	common/param.c				\
-	common/penalty_base.c			\
-	common/per_peer_state.c			\
+	common/onion_message_parse.c		\
 	common/peer_billboard.c			\
 	common/peer_failed.c			\
+	common/peer_io.c			\
+	common/penalty_base.c			\
+	common/per_peer_state.c			\
 	common/permute_tx.c			\
 	common/ping.c				\
-	common/psbt_internal.c			\
-	common/psbt_open.c			\
 	common/private_channel_announcement.c	\
+	common/psbt_internal.c			\
+	common/psbt_keypath.c			\
+	common/psbt_open.c			\
 	common/pseudorand.c			\
 	common/random_select.c			\
 	common/read_peer_msg.c			\
 	common/route.c				\
 	common/setup.c				\
 	common/shutdown_scriptpubkey.c		\
-	common/socket_close.c			\
 	common/sphinx.c				\
 	common/status.c				\
 	common/status_levels.c			\
@@ -94,25 +96,30 @@ COMMON_SRC_NOGEN :=				\
 	common/wire_error.c
 
 
-COMMON_SRC_GEN := common/status_wiregen.c common/peer_status_wiregen.c
+COMMON_SRC_GEN := common/status_wiregen.c common/peer_status_wiregen.c common/scb_wiregen.c
 
 COMMON_HEADERS_NOGEN := $(COMMON_SRC_NOGEN:.c=.h)	\
 	common/closing_fee.h				\
+	common/crypto_state.h				\
 	common/ecdh.h					\
 	common/errcode.h				\
 	common/gossip_constants.h			\
+	common/hsm_version.h				\
 	common/htlc.h					\
 	common/json_command.h				\
 	common/jsonrpc_errors.h				\
 	common/overflows.h				\
 	common/tx_roles.h
 
-COMMON_HEADERS_GEN := common/htlc_state_names_gen.h common/status_wiregen.h common/peer_status_wiregen.h
+COMMON_HEADERS_GEN := common/htlc_state_names_gen.h common/status_wiregen.h common/peer_status_wiregen.h common/scb_wiregen.h
 
 COMMON_HEADERS := $(COMMON_HEADERS_GEN) $(COMMON_HEADERS_NOGEN)
 COMMON_SRC := $(COMMON_SRC_NOGEN) $(COMMON_SRC_GEN)
 
 COMMON_OBJS := $(COMMON_SRC:.c=.o)
+
+common/scb_wiregen.h_args := -s
+common/scb_wiregen.c_args := -s
 
 # Check that all h and c files are in the Makefile!
 check-common-files:

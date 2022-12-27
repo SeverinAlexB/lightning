@@ -5,10 +5,10 @@ look like; in our case we use it in our testsuite to check that they
 match command responses, and also use it to generate our
 documentation.
 
-Yes, schemas are horrible to write, but they're damn useful.  We can
-only use a subset of the full [https://json-schema.org/](JSON Schema
-Specification), but if you find that limiting it's probably a sign
-that you should simplify your JSON output.
+Yes, schemas are horrible to write, but they're damn useful.  We can only
+use a subset of the full [JSON Schema Specification](https://json-schema.org/),
+but if you find that limiting it's probably a sign that you should simplify
+your JSON output.
 
 ## How to Write a Schema
 
@@ -39,6 +39,9 @@ You should always list all fields which are *always* present in
 We extend the basic types; see
 [contrib/pyln-testing/pyln/testing/fixtures.py](fixtures.py).
 
+In addition, before committing a new schema or a new version of it, make sure that it
+is well formatted. If you don't want do it by hand, use `make fmt-schema` that uses
+jq under the hood.
 
 ### Using Conditional Fields
 

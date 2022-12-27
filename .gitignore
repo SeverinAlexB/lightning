@@ -9,6 +9,8 @@
 *.dSYM
 *.rej
 *.pyc
+*.tmp
+libccan.a
 .cppcheck-suppress
 .mypy_cache
 TAGS
@@ -32,6 +34,8 @@ monkeytype.sqlite3
 !*/test/run-*.c
 */test/exp-run-*
 !*/test/exp-run-*.c
+*/*/test/run-*
+!*/*/test/run-*.c
 test/test_protocol
 test/test_sphinx
 tests/.pytest.restart
@@ -47,14 +51,34 @@ contrib/pylightning/pylightning.egg-info/
 contrib/pyln-*/build/
 contrib/pyln-*/dist/
 contrib/pyln-*/pyln_*.egg-info/
-release/
+contrib/pyln-*/.eggs/
+contrib/pyln-*/pyln/*/__version__.py
 tests/plugins/test_selfdisable_after_getmanifest
-.DS_Store
 
 # Ignore generated files
 devtools/features
 doc/lightning*.[1578]
+doc/reckless*.[1578]
 *_sqlgen.[ch]
 *_wiregen.[ch]
 *_printgen.[ch]
 *_gettextgen.po
+tests/node_pb2.py
+tests/node_pb2_grpc.py
+tests/primitives_pb2.py
+tests/primitives_pb2_grpc.py
+
+# Ignore unrelated stuff
+.DS_Store
+.gdb_history
+.python-version
+
+# Rust targets
+target
+plugins/cln-grpc
+
+# Build directories
+bionic/
+focal/
+jammy/
+release/

@@ -39,22 +39,23 @@ void peer_got_revoke(struct channel *channel, const u8 *msg);
 void update_per_commit_point(struct channel *channel,
 			     const struct pubkey *per_commitment_point);
 
-/* Returns NULL on success, otherwise failmsg (and sets *needs_update_appended)*/
+/* Returns NULL on success, otherwise failmsg*/
 const u8 *send_htlc_out(const tal_t *ctx,
 			struct channel *out,
 			struct amount_msat amount, u32 cltv,
+			struct amount_msat final_msat,
 			const struct sha256 *payment_hash,
 			const struct pubkey *blinding,
 			u64 partid,
 			u64 groupid,
 			const u8 *onion_routing_packet,
 			struct htlc_in *in,
-			struct htlc_out **houtp,
-			bool *needs_update_appended);
+			struct htlc_out **houtp);
 
 void onchain_failed_our_htlc(const struct channel *channel,
 			     const struct htlc_stub *htlc,
-			     const char *why);
+			     const char *why,
+			     bool should_exist);
 void onchain_fulfilled_htlc(struct channel *channel,
 			    const struct preimage *preimage);
 
@@ -76,8 +77,10 @@ void local_fail_in_htlc_needs_update(struct htlc_in *hin,
 /* This json process will be used as the serialize method for
  * forward_event_notification_gen and be used in
  * `listforwardings_add_forwardings()`. */
-void json_format_forwarding_object(struct json_stream *response, const char *fieldname,
-				   const struct forwarding *cur);
+void json_add_forwarding_object(struct json_stream *response,
+				const char *fieldname,
+				const struct forwarding *cur,
+				const struct sha256 *payment_hash);
 
 /* Helper to create (common) WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS */
 #define failmsg_incorrect_or_unknown(ctx, ld, hin) \

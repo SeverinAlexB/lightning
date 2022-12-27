@@ -32,6 +32,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **tx** (hex): The raw transaction which was sent
 - **txid** (txid): The txid of the **tx**
 
@@ -65,4 +66,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:0b374dbb074a5eed153d6a153526c20bd1681f67245dfc42a8ec3a2f1510c6b5)
+[comment]: # ( SHA256STAMP:6c0054088c17481dedbedb6a5ed4be7f09ce8783780707432907508ebf4bbd7a)

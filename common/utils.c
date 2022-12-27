@@ -1,8 +1,10 @@
-#include "utils.h"
+#include "config.h"
 #include <bitcoin/chainparams.h>
 #include <ccan/list/list.h>
 #include <ccan/str/hex/hex.h>
+#include <ccan/tal/path/path.h>
 #include <ccan/utf8/utf8.h>
+#include <common/utils.h>
 #include <errno.h>
 #include <locale.h>
 
@@ -32,10 +34,27 @@ void tal_wally_end(const tal_t *parent)
 {
 	tal_t *p;
 	while ((p = tal_first(wally_tal_ctx)) != NULL) {
-		if (p != parent)
-			tal_steal(parent, p);
+		/* Refuse to make a loop! */
+		assert(p != parent);
+#if DEVELOPER
+		/* Don't steal backtrace from wally_tal_ctx! */
+		if (tal_name(p) && streq(tal_name(p), "backtrace")) {
+			tal_free(p);
+			continue;
+		}
+#endif /* DEVELOPER */
+		tal_steal(parent, p);
 	}
 	wally_tal_ctx = tal_free(wally_tal_ctx);
+}
+
+void tal_wally_end_onto_(const tal_t *parent,
+			 tal_t *from_wally,
+			 const char *from_wally_name)
+{
+	if (from_wally)
+		tal_set_name_(from_wally, from_wally_name, 1);
+	tal_wally_end(tal_steal(parent, from_wally));
 }
 
 #if DEVELOPER
@@ -165,16 +184,6 @@ void tal_arr_remove_(void *p, size_t elemsize, size_t n)
     tal_resize((char **)p, len - elemsize);
 }
 
-void *tal_dup_talarr_(const tal_t *ctx, const tal_t *src TAKES, const char *label)
-{
-	if (!src) {
-		/* Correctly handle TAKES on a NULL `src`.  */
-		(void) taken(src);
-		return NULL;
-	}
-	return tal_dup_(ctx, src, 1, tal_bytelen(src), 0, label);
-}
-
 /* Check for valid UTF-8 */
 bool utf8_check(const void *vbuf, size_t buflen)
 {
@@ -208,4 +217,18 @@ char *utf8_str(const tal_t *ctx, const u8 *buf TAKES, size_t buflen)
 	ret = tal_dup_arr(ctx, char, (const char *)buf, buflen, 1);
 	ret[buflen] = '\0';
 	return ret;
+}
+
+int tmpdir_mkstemp(const tal_t *ctx, const char *template TAKES, char **created)
+{
+	char *tmpdir = getenv("TMPDIR");
+	char *path = path_join(ctx, tmpdir ?: "/tmp", template);
+	int fd = mkstemp(path);
+
+	if (fd >= 0)
+		*created = path;
+	else
+		tal_free(path);
+
+	return fd;
 }

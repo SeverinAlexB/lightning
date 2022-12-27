@@ -34,10 +34,7 @@ GOSSIPD_COMMON_OBJS :=				\
 	common/bech32_util.o			\
 	common/bigsize.o			\
 	common/bip32.o				\
-	common/blinding.o			\
-	common/blindedpath.o			\
 	common/channel_id.o			\
-	common/crypto_state.o			\
 	common/cryptomsg.o			\
 	common/daemon.o				\
 	common/daemon_conn.o			\
@@ -46,15 +43,12 @@ GOSSIPD_COMMON_OBJS :=				\
 	common/dev_disconnect.o			\
 	common/ecdh_hsmd.o			\
 	common/features.o			\
-	common/hmac.o				\
 	common/status_wiregen.o			\
-	common/gossip_rcvd_filter.o		\
 	common/key_derive.o			\
 	common/lease_rates.o			\
 	common/memleak.o			\
 	common/msg_queue.o			\
 	common/node_id.o			\
-	common/onion.o				\
 	common/onionreply.o			\
 	common/per_peer_state.o			\
 	common/ping.o				\
@@ -63,7 +57,6 @@ GOSSIPD_COMMON_OBJS :=				\
 	common/private_channel_announcement.o	\
 	common/random_select.o			\
 	common/setup.o				\
-	common/sphinx.o				\
 	common/status.o				\
 	common/status_wire.o			\
 	common/subdaemon.o			\
@@ -75,7 +68,6 @@ GOSSIPD_COMMON_OBJS :=				\
 	common/wireaddr.o			\
 	common/wire_error.o			\
 	connectd/connectd_gossipd_wiregen.o	\
-	lightningd/gossip_msg.o			\
 	wire/onion$(EXP)_wiregen.o
 
 lightningd/lightning_gossipd: $(GOSSIPD_OBJS) $(GOSSIPD_COMMON_OBJS) $(BITCOIN_OBJS) $(WIRE_OBJS) $(HSMD_CLIENT_OBJS)

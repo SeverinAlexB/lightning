@@ -4,7 +4,7 @@ lightning-connect -- Command for connecting to another lightning node
 SYNOPSIS
 --------
 
-**connect** *id* \[*host* *port*\]
+**connect** *id* [*host*] [*port*]
 
 DESCRIPTION
 -----------
@@ -18,7 +18,11 @@ be of the form *id@host* or *id@host:port*. In this case, the *host* and
 
 *host* is the peer's hostname or IP address.
 
-If not specified, the *port* defaults to 9735.
+If not specified, the *port* depends on the current network:
+- bitcoin **mainnet**: 9735.
+- bitcoin **testnet**: 19735.
+- bitcoin **signet**: 39735.
+- bitcoin **regtest**: 19846.
 
 If *host* is not specified (or doesn't work), the connection will be attempted to an IP
 belonging to *id* obtained through gossip with other already connected
@@ -36,11 +40,16 @@ Connecting to a node is just the first step in opening a channel with
 another node. Once the peer is connected a channel can be opened with
 lightning-fundchannel(7).
 
+If there are active channels with the peer, **connect** returns once
+all the subdaemons are in place to handle the channels, not just once
+it's connected.
+
 RETURN VALUE
 ------------
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **id** (pubkey): the peer we connected to
 - **features** (hex): BOLT 9 features bitmap offered by peer
 - **direction** (string): Whether they initiated connection or we did (one of "in", "out")
@@ -48,9 +57,11 @@ On success, an object is returned, containing:
   - **type** (string): Type of connection (*torv2*/*torv3* only if **direction** is *out*) (one of "local socket", "ipv4", "ipv6", "torv2", "torv3")
 
   If **type** is "local socket":
+
     - **socket** (string): socket filename
 
   If **type** is "ipv4", "ipv6", "torv2" or "torv3":
+
     - **address** (string): address in expected format for **type**
     - **port** (u16): port number
 
@@ -67,6 +78,10 @@ If some addresses are known but connecting to all of them failed, the message
 will contain details about the failures:
 
     { "code" : 401, "message" : "..." }
+
+If the peer disconnected while we were connecting:
+
+    { "code" : 402, "message" : "..." }
 
 If the given parameters are wrong:
 
@@ -89,4 +104,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:306d0966721f20c9a8688f33a030114a5ac095c6218eeb7fafd88fca97b9ee52)
+[comment]: # ( SHA256STAMP:581c6243302c8fa5c9234de97e1f6af842bbfee544850c55281924721b46432f)

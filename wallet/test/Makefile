@@ -21,13 +21,15 @@ WALLET_TEST_COMMON_OBJS :=			\
 	common/node_id.o			\
 	common/onionreply.o			\
 	common/key_derive.o			\
+	common/psbt_keypath.o		\
 	common/pseudorand.o			\
 	common/setup.o				\
 	common/timeout.o			\
 	common/utils.o				\
+	common/utxo.o				\
 	common/wireaddr.o			\
 	common/version.o			\
-	wallet/db_sqlite3.o			\
+	wallet/db_sqlite3_sqlgen.o		\
 	wire/towire.o				\
 	wire/fromwire.o
 

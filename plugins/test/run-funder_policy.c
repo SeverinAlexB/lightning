@@ -1,3 +1,4 @@
+#include "config.h"
 #include "../funder_policy.c"
 #include <ccan/array_size/array_size.h>
 #include <common/setup.h>
@@ -8,7 +9,7 @@
 bigsize_t fromwire_bigsize(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
 { fprintf(stderr, "fromwire_bigsize called!\n"); abort(); }
 /* Generated stub for fromwire_channel_id */
-void fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
+bool fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 			 struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "fromwire_channel_id called!\n"); abort(); }
 /* Generated stub for fromwire_node_id */
@@ -28,6 +29,7 @@ void towire_node_id(u8 **pptr UNNEEDED, const struct node_id *id UNNEEDED)
 struct test_case {
 	struct amount_sat their_funds;
 	struct amount_sat available_funds;
+	struct amount_sat *our_last_funds;
 	struct amount_sat channel_max;
 	struct amount_sat lease_request;
 
@@ -42,6 +44,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(100000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -64,6 +67,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(500),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -86,6 +90,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(6000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -108,6 +113,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(2500),
 		.available_funds = AMOUNT_SAT(6000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -130,6 +136,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(2500),
 		.available_funds = AMOUNT_SAT(5000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -152,6 +159,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(2500),
 		.available_funds = AMOUNT_SAT(3000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -174,6 +182,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(2500),
 		.available_funds = AMOUNT_SAT(5000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -196,6 +205,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(5000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.policy = {
 			.opt = FIXED,
@@ -219,6 +229,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(5000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(5500),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -241,6 +252,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(500),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(10000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -263,6 +275,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(1000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(10000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -285,6 +298,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5001),
 		.available_funds = AMOUNT_SAT(5000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(10000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -307,6 +321,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(1000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(10000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -329,6 +344,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(999),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(10000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -351,6 +367,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(5000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(5000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -373,6 +390,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(5000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -395,6 +413,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(100000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(980),
 		.policy = {
@@ -417,6 +436,7 @@ struct test_case cases[] = {
 	{
 		.their_funds = AMOUNT_SAT(5000),
 		.available_funds = AMOUNT_SAT(100000),
+		.our_last_funds = NULL,
 		.channel_max = AMOUNT_SAT(11000),
 		.lease_request = AMOUNT_SAT(0),
 		.policy = {
@@ -450,6 +470,7 @@ static void check_fuzzing(struct test_case fuzzcase)
 	for (size_t i = 0; i < 100; i++) {
 		calculate_our_funding(&fuzzcase.policy, id,
 				      fuzzcase.their_funds,
+				      fuzzcase.our_last_funds,
 				      fuzzcase.available_funds,
 				      fuzzcase.channel_max,
 				      fuzzcase.lease_request,
@@ -483,6 +504,7 @@ int main(int argc, const char *argv[])
 
 	err = calculate_our_funding(policy, id,
 				    AMOUNT_SAT(50000),
+				    NULL,
 				    AMOUNT_SAT(50000),
 				    AMOUNT_SAT(100000),
 				    AMOUNT_SAT(100000),
@@ -493,6 +515,7 @@ int main(int argc, const char *argv[])
 	for (i = 0; i < ARRAY_SIZE(cases); i++) {
 		err = calculate_our_funding(&cases[i].policy, id,
 					    cases[i].their_funds,
+					    cases[i].our_last_funds,
 					    cases[i].available_funds,
 					    cases[i].channel_max,
 					    cases[i].lease_request,
@@ -527,6 +550,7 @@ int main(int argc, const char *argv[])
 	for (i = 0; i < 100 * flips; i++) {
 		calculate_our_funding(&flipcase.policy, id,
 				      flipcase.their_funds,
+				      flipcase.our_last_funds,
 				      flipcase.available_funds,
 				      flipcase.channel_max,
 				      flipcase.lease_request,

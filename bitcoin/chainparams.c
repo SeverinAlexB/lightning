@@ -1,4 +1,6 @@
-#include "chainparams.h"
+#include "config.h"
+#include <assert.h>
+#include <bitcoin/chainparams.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/tal/str/str.h>
 #include <common/utils.h>
@@ -26,7 +28,8 @@ static u8 liquid_regtest_fee_asset[] = {
 
 const struct chainparams networks[] = {
     {.network_name = "bitcoin",
-     .bip173_name = "bc",
+     .onchain_hrp = "bc",
+     .lightning_hrp = "bc",
      .bip70_name = "main",
      .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
 				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
@@ -34,6 +37,7 @@ const struct chainparams networks[] = {
 				      0x5a, 0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00,
 				      0x00, 0x00, 0x00, 0x00}}}},
      .rpc_port = 8332,
+     .ln_port = 9735,
      .cli = "bitcoin-cli",
      .cli_args = NULL,
      .cli_min_supported_version = 150000,
@@ -46,6 +50,7 @@ const struct chainparams networks[] = {
       */
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      /* "Lightning Charge Powers Developers & Blockstream Store" */
      .when_lightning_became_cool = 504500,
      .p2pkh_version = 0,
@@ -56,20 +61,23 @@ const struct chainparams networks[] = {
 			   .bip32_privkey_version = BIP32_VER_MAIN_PRIVATE},
      .is_elements = false},
     {.network_name = "regtest",
-     .bip173_name = "bcrt",
+     .onchain_hrp = "bcrt",
+     .lightning_hrp = "bcrt",
      .bip70_name = "regtest",
      .genesis_blockhash = {{{.u.u8 = {0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b,
 				      0x59, 0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb,
 				      0x5b, 0xbf, 0x28, 0xc3, 0x4f, 0x3a, 0x5e,
 				      0x33, 0x2a, 0x1f, 0xc7, 0xb2, 0xb7, 0x3c,
 				      0xf1, 0x88, 0x91, 0x0f}}}},
-     .rpc_port = 18332,
+     .rpc_port = 18443,
+     .ln_port = 19846,
      .cli = "bitcoin-cli",
      .cli_args = "-regtest",
      .cli_min_supported_version = 150000,
      .dust_limit = { 546 },
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      .when_lightning_became_cool = 1,
      .p2pkh_version = 111,
      .p2sh_version = 196,
@@ -79,7 +87,8 @@ const struct chainparams networks[] = {
 			   .bip32_privkey_version = BIP32_VER_TEST_PRIVATE},
      .is_elements = false},
     {.network_name = "signet",
-     .bip173_name = "tb",
+     .onchain_hrp = "tb",
+     .lightning_hrp = "tbs",
      .bip70_name = "signet",
      // 00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
      .genesis_blockhash = {{{.u.u8 = {0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80,
@@ -88,12 +97,14 @@ const struct chainparams networks[] = {
 				      0x2c, 0x42, 0x25, 0xe9, 0x73, 0x98, 0x81,
 				      0x08, 0x00, 0x00, 0x00}}}},
      .rpc_port = 38332,
+     .ln_port = 39735,
      .cli = "bitcoin-cli",
      .cli_args = "-signet",
      .cli_min_supported_version = 150000,
      .dust_limit = { 546 },
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      .when_lightning_became_cool = 1,
      .p2pkh_version = 111,
      .p2sh_version = 196,
@@ -102,7 +113,8 @@ const struct chainparams networks[] = {
      .is_elements = false,
     },
     {.network_name = "testnet",
-     .bip173_name = "tb",
+     .onchain_hrp = "tb",
+     .lightning_hrp = "tb",
      .bip70_name = "test",
      .genesis_blockhash = {{{.u.u8 = {0x43, 0x49, 0x7f, 0xd7, 0xf8, 0x26, 0x95,
 				      0x71, 0x08, 0xf4, 0xa3, 0x0f, 0xd9, 0xce,
@@ -110,12 +122,14 @@ const struct chainparams networks[] = {
 				      0xe9, 0x0e, 0xad, 0x01, 0xea, 0x33, 0x09,
 				      0x00, 0x00, 0x00, 0x00}}}},
      .rpc_port = 18332,
+     .ln_port = 19735,
      .cli = "bitcoin-cli",
      .cli_args = "-testnet",
      .cli_min_supported_version = 150000,
      .dust_limit = { 546 },
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      .p2pkh_version = 111,
      .p2sh_version = 196,
      .testnet = true,
@@ -124,7 +138,8 @@ const struct chainparams networks[] = {
 			   .bip32_privkey_version = BIP32_VER_TEST_PRIVATE},
      .is_elements = false},
     {.network_name = "litecoin",
-     .bip173_name = "ltc",
+     .onchain_hrp = "ltc",
+     .lightning_hrp = "ltc",
      .bip70_name = "main",
      .genesis_blockhash = {{{.u.u8 = {0xe2, 0xbf, 0x04, 0x7e, 0x7e, 0x5a, 0x19,
 				      0x1a, 0xa4, 0xef, 0x34, 0xd3, 0x14, 0x97,
@@ -132,12 +147,14 @@ const struct chainparams networks[] = {
 				      0x1e, 0xda, 0xba, 0x59, 0x40, 0xfd, 0x1f,
 				      0xe3, 0x65, 0xa7, 0x12}}}},
      .rpc_port = 9332,
+     .ln_port = 9735,
      .cli = "litecoin-cli",
      .cli_args = NULL,
      .cli_min_supported_version = 150000,
      .dust_limit = { 100000 },
      .max_funding = AMOUNT_SAT_INIT(60 * ((1 << 24) - 1)),
      .max_payment = AMOUNT_MSAT_INIT(60 * 0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      .when_lightning_became_cool = 1320000,
      .p2pkh_version = 48,
      .p2sh_version = 50,
@@ -147,7 +164,8 @@ const struct chainparams networks[] = {
 			   .bip32_privkey_version = BIP32_VER_MAIN_PRIVATE},
      .is_elements = false},
     {.network_name = "litecoin-testnet",
-     .bip173_name = "tltc",
+     .onchain_hrp = "tltc",
+     .lightning_hrp = "tltc",
      .bip70_name = "test",
      .genesis_blockhash = {{{.u.u8 = {0xa0, 0x29, 0x3e, 0x4e, 0xeb, 0x3d, 0xa6,
 				      0xe6, 0xf5, 0x6f, 0x81, 0xed, 0x59, 0x5f,
@@ -155,12 +173,14 @@ const struct chainparams networks[] = {
 				      0x13, 0xee, 0xfd, 0xd9, 0x51, 0x28, 0x4b,
 				      0x5a, 0x62, 0x66, 0x49}}}},
      .rpc_port = 19332,
+     .ln_port = 9735,
      .cli = "litecoin-cli",
      .cli_args = "-testnet",
      .cli_min_supported_version = 150000,
      .dust_limit = { 100000 },
      .max_funding = AMOUNT_SAT_INIT(60 * ((1 << 24) - 1)),
      .max_payment = AMOUNT_MSAT_INIT(60 * 0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      .when_lightning_became_cool = 1,
      .p2pkh_version = 111,
      .p2sh_version = 58,
@@ -170,7 +190,8 @@ const struct chainparams networks[] = {
 			   .bip32_privkey_version = BIP32_VER_TEST_PRIVATE},
      .is_elements = false},
     {.network_name = "liquid-regtest",
-     .bip173_name = "ert",
+     .onchain_hrp = "ert",
+     .lightning_hrp = "ert",
      .bip70_name = "liquid-regtest",
      .genesis_blockhash = {{{.u.u8 = {0x9f, 0x87, 0xeb, 0x58, 0x0b, 0x9e, 0x5f,
 				      0x11, 0xdc, 0x21, 0x1e, 0x9f, 0xb6, 0x6a,
@@ -178,11 +199,13 @@ const struct chainparams networks[] = {
 				      0xfe, 0x14, 0x68, 0x01, 0x16, 0x23, 0x93,
 				      0x36, 0x42, 0x86, 0xc6}}}},
      .rpc_port = 19332,
+     .ln_port = 20735,
      .cli = "elements-cli",
      .cli_args = "-chain=liquid-regtest",
      .dust_limit = {546},
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      .when_lightning_became_cool = 1,
      .p2pkh_version = 91,
      .p2sh_version = 75,
@@ -192,7 +215,8 @@ const struct chainparams networks[] = {
 			   .bip32_privkey_version = BIP32_VER_TEST_PRIVATE},
      .is_elements = true},
     {.network_name = "liquid",
-     .bip173_name = "ex",
+     .onchain_hrp = "ex",
+     .lightning_hrp = "ex",
      .bip70_name = "liquidv1",
      .genesis_blockhash = {{{.u.u8 = {0x14, 0x66, 0x27, 0x58, 0x36, 0x22, 0x0d,
 				      0xb2, 0x94, 0x4c, 0xa0, 0x59, 0xa3, 0xa1,
@@ -200,11 +224,13 @@ const struct chainparams networks[] = {
 				      0x68, 0x8d, 0x2c, 0x37, 0x92, 0x96, 0x88,
 				      0x8a, 0x20, 0x60, 0x03}}}},
      .rpc_port = 7041,
+     .ln_port = 9735,
      .cli = "elements-cli",
      .cli_args = "-chain=liquidv1",
      .dust_limit = {546},
      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+     .max_supply = AMOUNT_SAT_INIT(2100000000000000),
      .when_lightning_became_cool = 1,
      .p2pkh_version = 57,
      .p2sh_version = 39,
@@ -225,14 +251,6 @@ const struct chainparams *chainparams_for_network(const char *network_name)
 	return NULL;
 }
 
-const struct chainparams **chainparams_for_networks(const tal_t *ctx)
-{
-	const struct chainparams **params = tal_arr(ctx, const struct chainparams*, 0);
-	for (size_t i = 0; i < ARRAY_SIZE(networks); i++)
-		tal_arr_expand(&params, &networks[i]);
-	return params;
-}
-
 const struct chainparams *chainparams_by_chainhash(const struct bitcoin_blkid *chain_hash)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(networks); i++) {
@@ -243,10 +261,10 @@ const struct chainparams *chainparams_by_chainhash(const struct bitcoin_blkid *c
 	return NULL;
 }
 
-const struct chainparams *chainparams_by_bip173(const char *bip173_name)
+const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(networks); i++) {
-		if (streq(bip173_name, networks[i].bip173_name)) {
+		if (streq(lightning_hrp, networks[i].lightning_hrp)) {
 			return &networks[i];
 		}
 	}
@@ -261,3 +279,8 @@ const char *chainparams_get_network_names(const tal_t *ctx)
     return networks_string;
 }
 
+int chainparams_get_ln_port(const struct chainparams *params)
+{
+	assert(params);
+	return params->ln_port;
+}

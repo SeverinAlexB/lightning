@@ -33,6 +33,10 @@ struct config {
 	/* htlcs per channel */
 	u32 max_concurrent_htlcs;
 
+	/* htlc min/max values */
+	struct amount_msat htlc_minimum_msat;
+	struct amount_msat htlc_maximum_msat;
+
 	/* Max amount of dust allowed per channel */
 	struct amount_msat max_dust_htlc_exposure_msat;
 
@@ -52,11 +56,11 @@ struct config {
 	/* Are we allowed to use DNS lookup for peers. */
 	bool use_dns;
 
+	/* Turn off IP address announcement discovered via peer `remote_addr` */
+	bool disable_ip_discovery;
+
 	/* Minimal amount of effective funding_satoshis for accepting channels */
 	u64 min_capacity_sat;
-
-	/* Allow to define the default behavior of tor services calls*/
-	bool use_v3_autotor;
 
 	/* This is the key we use to encrypt `hsm_secret`. */
 	struct secret *keypass;
@@ -66,6 +70,12 @@ struct config {
 
 	/* EXPERIMENTAL: offers support */
 	bool exp_offers;
+
+	/* Allow dust reserves (including 0) when being called via
+	 * `fundchannel` or in the `openchannel` hook. This is a
+	 * slight spec incompatibility, but implementations do this
+	 * already. */
+	bool allowdustreserve;
 };
 
 typedef STRMAP(const char *) alt_subdaemon_map;
@@ -106,16 +116,16 @@ struct lightningd {
 	struct log_book *log_book;
 	/* Log for general stuff. */
 	struct log *log;
-	const char *logfile;
+	const char **logfiles;
 
 	/* This is us. */
 	struct node_id id;
 
 	/* The public base for our payer_id keys */
-	struct point32 bolt12_base;
+	struct pubkey bolt12_base;
 
-	/* The secret we put in onion message paths to know it's ours. */
-	struct secret onion_reply_secret;
+	/* Secret base for our invoices */
+	struct secret invoicesecret_base;
 
 	/* Feature set we offer. */
 	struct feature_set *our_features;
@@ -144,9 +154,19 @@ struct lightningd {
 	/* Setup: And the bitset for each, whether to listen, announce or both */
 	enum addr_listen_announce *proposed_listen_announce;
 
-	/* Actual bindings and announcables from gossipd */
+	/* Actual bindings and announceables from gossipd */
 	struct wireaddr_internal *binding;
-	struct wireaddr *announcable;
+	struct wireaddr *announceable;
+
+	/* unverified remote_addr as reported by recent peers */
+	struct wireaddr *remote_addr_v4;
+	struct wireaddr *remote_addr_v6;
+	struct node_id remote_addr_v4_peer;
+	struct node_id remote_addr_v6_peer;
+
+	/* verified discovered IPs to be used for anouncement */
+	struct wireaddr *discovered_ip_v4;
+	struct wireaddr *discovered_ip_v6;
 
 	/* Bearer of all my secrets. */
 	int hsm_fd;
@@ -167,6 +187,9 @@ struct lightningd {
 	/* Our chain topology. */
 	struct chain_topology *topology;
 
+	/* Blockheight (as acknowledged by gossipd) */
+	u32 blockheight;
+
 	/* HTLCs in flight. */
 	struct htlc_in_map htlcs_in;
 	struct htlc_out_map htlcs_out;
@@ -184,6 +207,8 @@ struct lightningd {
 	struct list_head close_commands;
 	/* Outstanding ping commands. */
 	struct list_head ping_commands;
+	/* Outstanding disconnect commands. */
+	struct list_head disconnect_commands;
 
 	/* Maintained by invoices.c */
 	struct invoices *invoices;
@@ -199,13 +224,25 @@ struct lightningd {
 	/* RPC response to send once we've shut down. */
 	const char *stop_response;
 
+	/* All the subdaemons. */
+	struct list_head subds;
+
 	/* Used these feerates instead of whatever bcli returns (up to
 	 * FEERATE_PENALTY). */
 	u32 *force_feerates;
 
+	/* If they force db upgrade on or off this is set. */
+	bool *db_upgrade_ok;
+
+	/* Announce names in config as DNS records (recently BOLT 7 addition) */
+	bool announce_dns;
+
 #if DEVELOPER
 	/* If we want to debug a subdaemon/plugin. */
 	const char *dev_debug_subprocess;
+
+	/* If we have --dev-no-plugin-checksum */
+	bool dev_no_plugin_checksum;
 
 	/* If we have a --dev-disconnect file */
 	int dev_disconnect_fd;
@@ -223,8 +260,8 @@ struct lightningd {
 	bool dev_fast_gossip;
 	bool dev_fast_gossip_prune;
 
-	/* Things we've marked as not leaking. */
-	const void **notleaks;
+	/* Speedup reconnect delay, for testing. */
+	bool dev_fast_reconnect;
 
 	/* This is the forced private key for the node. */
 	struct privkey *dev_force_privkey;
@@ -249,7 +286,13 @@ struct lightningd {
 	u32 dev_max_funding_unconfirmed;
 
 	/* Special switches to test onion compatibility */
-	bool dev_ignore_modern_onion, dev_ignore_obsolete_onion;
+	bool dev_ignore_modern_onion;
+
+	/* Tell channeld to disable commits after this many. */
+	int dev_disable_commit;
+
+	/* Tell channeld not to worry about pings. */
+	bool dev_no_ping_timer;
 #endif /* DEVELOPER */
 
 	/* tor support */

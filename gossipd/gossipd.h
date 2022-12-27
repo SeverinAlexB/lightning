@@ -9,12 +9,14 @@
 #define HSM_FD 3
 /* connectd asks us for help finding nodes, and gossip fds for new peers */
 #define CONNECTD_FD 4
+#define CONNECTD2_FD 5
 
 struct chan;
 struct channel_update_timestamps;
 struct broadcastable;
 struct lease_rates;
 struct seeker;
+struct dying_channel;
 
 /*~ The core daemon structure: */
 struct daemon {
@@ -44,10 +46,17 @@ struct daemon {
 	u8 rgb[3];
 
 	/* What addresses we can actually announce. */
-	struct wireaddr *announcable;
+	struct wireaddr *announceable;
 
-	/* Timer until we can send a new node_announcement */
+	/* verified remote_addr as reported by recent peers */
+	struct wireaddr *discovered_ip_v4;
+	struct wireaddr *discovered_ip_v6;
+
+	/* Timer until we can send an updated node_announcement */
 	struct oneshot *node_announce_timer;
+
+	/* Timer until we should force a new new node_announcement */
+	struct oneshot *node_announce_regen_timer;
 
 	/* Channels we have an announce for, but aren't deep enough. */
 	struct short_channel_id *deferred_txouts;
@@ -60,6 +69,9 @@ struct daemon {
 
 	/* The channel lease rates we're advertising */
 	const struct lease_rates *rates;
+
+	/* Any of our channel_updates we're deferring. */
+	struct list_head deferred_updates;
 };
 
 struct range_query_reply {
@@ -104,9 +116,6 @@ struct peer {
 	void (*query_channel_range_cb)(struct peer *peer,
 				       u32 first_blocknum, u32 number_of_blocks,
 				       const struct range_query_reply *replies);
-
-	/* The daemon_conn used to queue messages to/from the peer. */
-	struct daemon_conn *dc;
 };
 
 /* Search for a peer. */
@@ -127,11 +136,5 @@ void queue_peer_msg(struct peer *peer, const u8 *msg TAKES);
  * other end simply forwards it to the peer. */
 void queue_peer_from_store(struct peer *peer,
 			   const struct broadcastable *bcast);
-
-/* Reset gossip range for this peer. */
-void setup_gossip_range(struct peer *peer);
-
-/* A peer has given us these short channel ids: see if we need to catch up */
-void process_scids(struct daemon *daemon, const struct short_channel_id *scids);
 
 #endif /* LIGHTNING_GOSSIPD_GOSSIPD_H */

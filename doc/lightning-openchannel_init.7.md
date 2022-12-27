@@ -4,7 +4,7 @@ lightning-openchannel\_init -- Command to initiate a channel to a peer
 SYNOPSIS
 --------
 
-**openchannel_init** *id* *amount* *initalpsbt* \[*commitment_feerate*\] \[*funding_feerate*\] \[*announce*\] \[*close_to*\] \[*request_amt*\] \[*compact_lease*\]
+**openchannel_init** *id* *amount* *initalpsbt* [*commitment_feerate*] [*funding_feerate*] [*announce*] [*close_to*] [*request_amt*] [*compact_lease*]
 
 DESCRIPTION
 -----------
@@ -52,10 +52,11 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **channel_id** (hex): the channel id of the channel (always 64 characters)
+
+- **channel\_id** (hex): the channel id of the channel (always 64 characters)
 - **psbt** (string): the (incomplete) PSBT of the funding transaction
-- **commitments_secured** (boolean): whether the *psbt* is complete (always *false*)
-- **funding_serial** (u64): the serial_id of the funding output in the *psbt*
+- **commitments\_secured** (boolean): whether the *psbt* is complete (always *false*)
+- **funding\_serial** (u64): the serial_id of the funding output in the *psbt*
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -102,4 +103,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:d37b879bb07c8a29c3733620792bff777d8316e22cea9abd38efca9585a790e0)
+[comment]: # ( SHA256STAMP:18421f03dece31aafe32cb1a9b520dd6b898e018cb187de6d666e391232fab4e)

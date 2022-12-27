@@ -6,6 +6,7 @@
  * which indicates what it's allowed to ask for.  We're entirely driven
  * by request, response.
  */
+#include "config.h"
 #include <ccan/array_size/array_size.h>
 #include <ccan/intmap/intmap.h>
 #include <ccan/io/fdpass/fdpass.h>
@@ -96,10 +97,6 @@ static bool is_lightningd(const struct client *client)
 	return client == dbid_zero_clients[0];
 }
 
-/* FIXME: This is used by debug.c.  Doesn't apply to us, but lets us link. */
-extern void dev_disconnect_init(int fd);
-void dev_disconnect_init(int fd UNUSED) { }
-
 /* Pre-declare this, due to mutual recursion */
 static struct io_plan *handle_client(struct io_conn *conn, struct client *c);
 
@@ -125,7 +122,7 @@ static struct io_plan *bad_req_fmt(struct io_conn *conn,
 	char *str;
 
 	va_start(ap, fmt);
-	str = tal_fmt(tmpctx, fmt, ap);
+	str = tal_vfmt(tmpctx, fmt, ap);
 	va_end(ap);
 
 	/*~ If the client was actually lightningd, it's Game Over; we actually
@@ -168,6 +165,7 @@ static struct io_plan *bad_req(struct io_conn *conn,
  * and then call handle_client with argument 'c' */
 static struct io_plan *client_read_next(struct io_conn *conn, struct client *c)
 {
+	c->msg_in = tal_free(c->msg_in);
 	return io_read_wire(conn, c, &c->msg_in, handle_client, c);
 }
 
@@ -189,6 +187,8 @@ static struct client *new_client(const tal_t *ctx,
 				 int fd)
 {
 	struct client *c = tal(ctx, struct client);
+
+	c->msg_in = NULL;
 
 	/*~ All-zero pubkey is used for the initial master connection */
 	if (id) {
@@ -309,7 +309,7 @@ static void create_hsm(int fd)
 	}
 }
 
-/*~ We store our root secret in a "hsm_secret" file (like all of c-lightning,
+/*~ We store our root secret in a "hsm_secret" file (like all of Core Lightning,
  * we run in the user's .lightning directory). */
 static void maybe_create_new_hsm(const struct secret *encryption_key,
                                  bool random_hsm)
@@ -443,6 +443,8 @@ static struct io_plan *init_hsm(struct io_conn *conn,
 	struct sha256 *shaseed;
 	struct secret *hsm_encryption_key;
 	struct bip32_key_version bip32_key_version;
+	u32 minversion, maxversion;
+	const u32 our_minversion = 2, our_maxversion = 2;
 
 	/* This must be lightningd. */
 	assert(is_lightningd(c));
@@ -452,8 +454,18 @@ static struct io_plan *init_hsm(struct io_conn *conn,
 	 * an extension of the simple comma-separated format output by the
 	 * BOLT tools/extract-formats.py tool. */
 	if (!fromwire_hsmd_init(NULL, msg_in, &bip32_key_version, &chainparams,
-	                       &hsm_encryption_key, &privkey, &seed, &secrets, &shaseed))
+				&hsm_encryption_key, &privkey, &seed, &secrets, &shaseed,
+				&minversion, &maxversion))
 		return bad_req(conn, c, msg_in);
+
+	/*~ Usually we don't worry about API breakage between internal daemons,
+	 * but there are other implementations of the HSM daemon now, so we
+	 * do at least the simplest, clearest thing. */
+	if (our_minversion > maxversion || our_maxversion < minversion)
+		return bad_req_fmt(conn, c, msg_in,
+				   "Version %u-%u not valid: we need %u-%u",
+				   minversion, maxversion,
+				   our_minversion, our_maxversion);
 
 	/*~ The memory is actually copied in towire(), so lock the `hsm_secret`
 	 * encryption key (new) memory again here. */
@@ -555,18 +567,16 @@ static struct io_plan *handle_memleak(struct io_conn *conn,
 	bool found_leak;
 	u8 *reply;
 
-	memtable = memleak_find_allocations(tmpctx, msg_in, msg_in);
+	memtable = memleak_start(tmpctx);
+	memleak_ptr(memtable, msg_in);
 
-	/* Now delete clients and anything they point to. */
-	memleak_remove_region(memtable, c, tal_bytelen(c));
-	memleak_remove_region(memtable,
-			      dbid_zero_clients, sizeof(dbid_zero_clients));
-	memleak_remove_uintmap(memtable, &clients);
-	memleak_remove_region(memtable,
-			      status_conn, tal_bytelen(status_conn));
+	/* Now note clients and anything they point to. */
+	memleak_scan_region(memtable, dbid_zero_clients, sizeof(dbid_zero_clients));
+	memleak_scan_uintmap(memtable, &clients);
+	memleak_scan_obj(memtable, status_conn);
 
-	memleak_remove_pointer(memtable, dev_force_privkey);
-	memleak_remove_pointer(memtable, dev_force_bip32_seed);
+	memleak_ptr(memtable, dev_force_privkey);
+	memleak_ptr(memtable, dev_force_bip32_seed);
 
 	found_leak = dump_memleak(memtable, memleak_status_broken);
 	reply = towire_hsmd_dev_memleak_reply(NULL, found_leak);
@@ -617,6 +627,9 @@ static struct io_plan *handle_client(struct io_conn *conn, struct client *c)
 {
 	enum hsmd_wire t = fromwire_peektype(c->msg_in);
 
+	if (!is_lightningd(c))
+		status_peer_debug(&c->id, "Got %s", hsmd_wire_name(t));
+
 	/* Before we do anything else, is this client allowed to do
 	 * what he asks for? */
 	if (!hsmd_check_client_capabilities(c->hsmd_client, t))
@@ -639,7 +652,11 @@ static struct io_plan *handle_client(struct io_conn *conn, struct client *c)
 	case WIRE_HSMD_DEV_MEMLEAK:
 #endif /* DEVELOPER */
 
+	case WIRE_HSMD_NEW_CHANNEL:
+	case WIRE_HSMD_READY_CHANNEL:
 	case WIRE_HSMD_SIGN_COMMITMENT_TX:
+	case WIRE_HSMD_VALIDATE_COMMITMENT_TX:
+	case WIRE_HSMD_VALIDATE_REVOCATION:
 	case WIRE_HSMD_SIGN_PENALTY_TO_US:
 	case WIRE_HSMD_SIGN_REMOTE_COMMITMENT_TX:
 	case WIRE_HSMD_SIGN_REMOTE_HTLC_TX:
@@ -654,6 +671,7 @@ static struct io_plan *handle_client(struct io_conn *conn, struct client *c)
 	case WIRE_HSMD_ECDH_REQ:
 	case WIRE_HSMD_CHECK_FUTURE_SECRET:
 	case WIRE_HSMD_GET_OUTPUT_SCRIPTPUBKEY:
+	case WIRE_HSMD_DERIVE_SECRET:
 	case WIRE_HSMD_CANNOUNCEMENT_SIG_REQ:
 	case WIRE_HSMD_NODE_ANNOUNCEMENT_SIG_REQ:
 	case WIRE_HSMD_CUPDATE_SIG_REQ:
@@ -669,12 +687,18 @@ static struct io_plan *handle_client(struct io_conn *conn, struct client *c)
 	case WIRE_HSMD_CANNOUNCEMENT_SIG_REPLY:
 	case WIRE_HSMD_CUPDATE_SIG_REPLY:
 	case WIRE_HSMD_CLIENT_HSMFD_REPLY:
+	case WIRE_HSMD_NEW_CHANNEL_REPLY:
+	case WIRE_HSMD_READY_CHANNEL_REPLY:
 	case WIRE_HSMD_NODE_ANNOUNCEMENT_SIG_REPLY:
 	case WIRE_HSMD_SIGN_WITHDRAWAL_REPLY:
 	case WIRE_HSMD_SIGN_INVOICE_REPLY:
-	case WIRE_HSMD_INIT_REPLY:
+	case WIRE_HSMD_INIT_REPLY_V1:
+	case WIRE_HSMD_INIT_REPLY_V2:
+	case WIRE_HSMD_DERIVE_SECRET_REPLY:
 	case WIRE_HSMSTATUS_CLIENT_BAD_REQUEST:
 	case WIRE_HSMD_SIGN_COMMITMENT_TX_REPLY:
+	case WIRE_HSMD_VALIDATE_COMMITMENT_TX_REPLY:
+	case WIRE_HSMD_VALIDATE_REVOCATION_REPLY:
 	case WIRE_HSMD_SIGN_TX_REPLY:
 	case WIRE_HSMD_SIGN_OPTION_WILL_FUND_OFFER_REPLY:
 	case WIRE_HSMD_GET_PER_COMMITMENT_POINT_REPLY:

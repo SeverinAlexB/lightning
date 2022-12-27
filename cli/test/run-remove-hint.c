@@ -1,9 +1,12 @@
 #include "config.h"
+#include "config_test.h"
 #include <common/amount.h>
 #include <common/bigsize.h>
 #include <common/channel_id.h>
 #include <common/json_stream.h>
 #include <common/node_id.h>
+#include <common/setup.h>
+#include <common/wireaddr.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/socket.h>
@@ -19,7 +22,7 @@ int test_fputc(int c, FILE *stream);
 int test_chdir(const char *path);
 
 #define main test_main
-#define read test_read
+#define cli_read test_read
 #define socket test_socket
 #define connect test_connect
 #define getpid test_getpid
@@ -72,22 +75,12 @@ struct amount_sat fromwire_amount_sat(const u8 **cursor UNNEEDED, size_t *max UN
 bigsize_t fromwire_bigsize(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
 { fprintf(stderr, "fromwire_bigsize called!\n"); abort(); }
 /* Generated stub for fromwire_channel_id */
-void fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
+bool fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 			 struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "fromwire_channel_id called!\n"); abort(); }
 /* Generated stub for fromwire_node_id */
 void fromwire_node_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, struct node_id *id UNNEEDED)
 { fprintf(stderr, "fromwire_node_id called!\n"); abort(); }
-/* Generated stub for json_add_member */
-void json_add_member(struct json_stream *js UNNEEDED,
-		     const char *fieldname UNNEEDED,
-		     bool quote UNNEEDED,
-		     const char *fmt UNNEEDED, ...)
-{ fprintf(stderr, "json_add_member called!\n"); abort(); }
-/* Generated stub for json_member_direct */
-char *json_member_direct(struct json_stream *js UNNEEDED,
-			 const char *fieldname UNNEEDED, size_t extra UNNEEDED)
-{ fprintf(stderr, "json_member_direct called!\n"); abort(); }
 /* Generated stub for log_level_name */
 const char *log_level_name(enum log_level level UNNEEDED)
 { fprintf(stderr, "log_level_name called!\n"); abort(); }
@@ -132,7 +125,7 @@ int test_getpid(void)
 	return 9999;
 }
 
-static char *response = "{\"id\": \"lightning-cli-9999\", \"jsonrpc\": \"2.0\", \"result\": {\"channels\": [\"\n\", \"├477308sat    OUT/OURS ┼ IN/THEIRS   477308sat┤ SCID           FLAG ALIAS\", \"├──────────────────────┼──────────────────────┤ 580612x1826x0  [__] BLUEIRON-v0.7.2rc1\"], \"my_address\": \"02b78caed0f45120acc48efe867aa506e8ea60f0712a23303178471da0ca2213f5@hdco6sxkbisc7s5t.onion\", \"format-hint\": \"simple\", \"avail_in\": \"0.00477308500btc (USD $54.37)\", \"num_utxos\": 0, \"num_gossipers\": 1, \"channels_flags\": \"P:private O:offline\", \"avail_out\": \"0.00477308500btc (USD $54.37)\", \"utxo_amount\": \"0.00000000btc (USD $0.00)\", \"num_channels\": 1, \"num_connected\": 1}}\n\n";
+static char *response = "{\"id\": \"cli:test#9999\", \"jsonrpc\": \"2.0\", \"result\": {\"channels\": [\"\n\", \"├477308sat    OUT/OURS ┼ IN/THEIRS   477308sat┤ SCID           FLAG ALIAS\", \"├──────────────────────┼──────────────────────┤ 580612x1826x0  [__] BLUEIRON-v0.7.2rc1\"], \"my_address\": \"02b78caed0f45120acc48efe867aa506e8ea60f0712a23303178471da0ca2213f5@hdco6sxkbisc7s5t.onion\", \"format-hint\": \"simple\", \"avail_in\": \"0.00477308500btc (USD $54.37)\", \"num_utxos\": 0, \"num_gossipers\": 1, \"channels_flags\": \"P:private O:offline\", \"avail_out\": \"0.00477308500btc (USD $54.37)\", \"utxo_amount\": \"0.00000000btc (USD $0.00)\", \"num_channels\": 1, \"num_connected\": 1}}\n\n";
 static size_t response_off;
 
 ssize_t test_read(int fd UNUSED, void *buf, size_t len)
@@ -168,7 +161,7 @@ int test_chdir(const char *path)
 
 int main(int argc UNUSED, char *argv[])
 {
-	setup_locale();
+	common_setup(argv[0]);
 
 	char *fake_argv[] = { argv[0], "--lightning-dir=/tmp/", "test", "-N", "none", NULL };
 
@@ -190,6 +183,6 @@ int main(int argc UNUSED, char *argv[])
 		     "num_connected=1\n"));
 	tal_free(output);
 	assert(!taken_any());
-	take_cleanup();
+	common_shutdown();
 	return 0;
 }

@@ -40,11 +40,12 @@ u64 gossip_store_add_private_update(struct gossip_store *gs, const u8 *update);
  * @gossip_msg: the gossip message to insert.
  * @timestamp: the timestamp for filtering of this messsage.
  * @push: true if this should be sent to peers despite any timestamp filters.
+ * @spam: true if this message is rate-limited and squelched to peers.
  * @addendum: another message to append immediately after this
  *            (for appending amounts to channel_announcements for internal use).
  */
 u64 gossip_store_add(struct gossip_store *gs, const u8 *gossip_msg,
-		     u32 timestamp, bool push, const u8 *addendum);
+		     u32 timestamp, bool push, bool spam, const u8 *addendum);
 
 
 /**
@@ -91,8 +92,5 @@ bool gossip_store_compact(struct gossip_store *gs);
  * Returns -1 on failure, and sets errno.
  */
 int gossip_store_readonly_fd(struct gossip_store *gs);
-
-/* Callback inside gossipd when store is compacted */
-void update_peers_broadcast_index(struct list_head *peers, u32 offset);
 
 #endif /* LIGHTNING_GOSSIPD_GOSSIP_STORE_H */

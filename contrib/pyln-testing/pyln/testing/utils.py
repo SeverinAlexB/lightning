@@ -5,12 +5,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from pyln.client import RpcError
 from pyln.testing.btcproxy import BitcoinRpcProxy
+from pyln.testing.gossip import GossipStore
 from collections import OrderedDict
 from decimal import Decimal
-from ephemeral_port_reserve import reserve  # type: ignore
 from pyln.client import LightningRpc
 from pyln.client import Millisatoshi
+from pyln.testing import grpc
 
+import ephemeral_port_reserve  # type: ignore
 import json
 import logging
 import lzma
@@ -53,7 +55,7 @@ def env(name, default=None):
     """Access to environment variables
 
     Allows access to environment variables, falling back to config.vars (part
-    of c-lightning's `./configure` output), and finally falling back to a
+    of Core Lightning's `./configure` output), and finally falling back to a
     default value.
 
     """
@@ -105,6 +107,22 @@ def write_config(filename, opts, regtest_opts=None, section_name='regtest'):
                 f.write("{}={}\n".format(k, v))
 
 
+def scid_to_int(scid):
+    """Convert a 1x2x3 scid to a raw integer"""
+    blocknum, txnum, outnum = scid.split("x")
+
+    # BOLT #7:
+    # ## Definition of `short_channel_id`
+    #
+    # The `short_channel_id` is the unique description of the funding transaction.
+    # It is constructed as follows:
+    # 1. the most significant 3 bytes: indicating the block height
+    # 2. the next 3 bytes: indicating the transaction index within the block
+    # 3. the least significant 2 bytes: indicating the output index that pays to the
+    #    channel.
+    return (int(blocknum) << 40) | (int(txnum) << 16) | int(outnum)
+
+
 def only_one(arr):
     """Many JSON RPC calls return an array; often we only expect a single entry
     """
@@ -116,6 +134,17 @@ def sync_blockheight(bitcoind, nodes):
     height = bitcoind.rpc.getblockchaininfo()['blocks']
     for n in nodes:
         wait_for(lambda: n.rpc.getinfo()['blockheight'] == height)
+
+
+def mine_funding_to_announce(bitcoind, nodes, num_blocks=5, wait_for_mempool=0):
+    """Mine blocks so a channel can be announced (5, if it's already
+mined), but make sure we don't leave nodes behind who will reject the
+announcement.  Not needed if there are only two nodes.
+
+    """
+    bitcoind.generate_block(num_blocks - 1, wait_for_mempool)
+    sync_blockheight(bitcoind, nodes)
+    bitcoind.generate_block(1)
 
 
 def wait_channel_quiescent(n1, n2):
@@ -135,6 +164,27 @@ def get_tx_p2wsh_outnum(bitcoind, tx, amount):
     return None
 
 
+unused_port_lock = threading.Lock()
+unused_port_set = set()
+
+
+def reserve_unused_port():
+    """Get an unused port: avoids handing out the same port unless it's been
+    returned"""
+    with unused_port_lock:
+        while True:
+            port = ephemeral_port_reserve.reserve()
+            if port not in unused_port_set:
+                break
+        unused_port_set.add(port)
+
+    return port
+
+
+def drop_unused_port(port):
+    unused_port_set.remove(port)
+
+
 class TailableProc(object):
     """A monitorable process that we can start, stop and tail.
 
@@ -142,13 +192,20 @@ class TailableProc(object):
     tail the processes and react to their output.
     """
 
-    def __init__(self, outputDir=None, verbose=True):
+    def __init__(self, outputDir, verbose=True):
         self.logs = []
-        self.logs_cond = threading.Condition(threading.RLock())
         self.env = os.environ.copy()
-        self.running = False
         self.proc = None
         self.outputDir = outputDir
+        if not os.path.exists(outputDir):
+            os.makedirs(outputDir)
+        # Create and open them.
+        self.stdout_filename = os.path.join(outputDir, "log")
+        self.stderr_filename = os.path.join(outputDir, "errlog")
+        self.stdout_write = open(self.stdout_filename, "wt")
+        self.stderr_write = open(self.stderr_filename, "wt")
+        self.stdout_read = open(self.stdout_filename, "rt")
+        self.stderr_read = open(self.stderr_filename, "rt")
         self.logsearch_start = 0
         self.err_logs = []
         self.prefix = ""
@@ -160,29 +217,31 @@ class TailableProc(object):
         # pass it to the log matcher and not print it to stdout).
         self.log_filter = lambda line: False
 
-    def start(self, stdin=None, stdout=None, stderr=None):
-        """Start the underlying process and start monitoring it.
+    def start(self, stdin=None, stdout_redir=True, stderr_redir=True):
+        """Start the underlying process and start monitoring it. If
+        stdout_redir is false, you have to make sure logs go into
+        outputDir/log
+
         """
         logging.debug("Starting '%s'", " ".join(self.cmd_line))
+        if stdout_redir:
+            stdout = self.stdout_write
+        else:
+            stdout = None
+        if stderr_redir:
+            stderr = self.stderr_write
+            self.stderr_redir = True
+        else:
+            stderr = None
+            self.stderr_redir = False
+
         self.proc = subprocess.Popen(self.cmd_line,
                                      stdin=stdin,
-                                     stdout=stdout if stdout else subprocess.PIPE,
+                                     stdout=stdout,
                                      stderr=stderr,
                                      env=self.env)
-        self.thread = threading.Thread(target=self.tail)
-        self.thread.daemon = True
-        self.thread.start()
-        self.running = True
-
-    def save_log(self):
-        if self.outputDir:
-            logpath = os.path.join(self.outputDir, 'log')
-            with open(logpath, 'w') as f:
-                for l in self.logs:
-                    f.write(l + '\n')
 
     def stop(self, timeout=10):
-        self.save_log()
         self.proc.terminate()
 
         # Now give it some time to react to the signal
@@ -192,56 +251,32 @@ class TailableProc(object):
             self.proc.kill()
 
         self.proc.wait()
-        self.thread.join()
-
         return self.proc.returncode
 
     def kill(self):
         """Kill process without giving it warning."""
         self.proc.kill()
         self.proc.wait()
-        self.thread.join()
 
-    def tail(self):
-        """Tail the stdout of the process and remember it.
-
-        Stores the lines of output produced by the process in
-        self.logs and signals that a new line was read so that it can
-        be picked up by consumers.
+    def logs_catchup(self):
+        """Save the latest stdout / stderr contents; return true if we got anything.
         """
-        for line in iter(self.proc.stdout.readline, ''):
-            if len(line) == 0:
-                break
-
-            line = line.decode('UTF-8', 'replace').rstrip()
-
-            if self.log_filter(line):
-                continue
-
-            if self.verbose:
-                sys.stdout.write("{}: {}\n".format(self.prefix, line))
-
-            with self.logs_cond:
-                self.logs.append(line)
-                self.logs_cond.notifyAll()
-
-        self.running = False
-        self.proc.stdout.close()
-
-        if self.proc.stderr:
-            for line in iter(self.proc.stderr.readline, ''):
-
-                if line is None or len(line) == 0:
-                    break
-
-                line = line.rstrip().decode('UTF-8', 'replace')
-                self.err_logs.append(line)
-
-            self.proc.stderr.close()
+        new_stdout = self.stdout_read.readlines()
+        if self.verbose:
+            for line in new_stdout:
+                sys.stdout.write("{}: {}".format(self.prefix, line))
+        self.logs += [l.rstrip() for l in new_stdout]
+        new_stderr = self.stderr_read.readlines()
+        if self.verbose:
+            for line in new_stderr:
+                sys.stderr.write("{}-stderr: {}".format(self.prefix, line))
+        self.err_logs += [l.rstrip() for l in new_stderr]
+        return len(new_stdout) > 0 or len(new_stderr) > 0
 
     def is_in_log(self, regex, start=0):
         """Look for `regex` in the logs."""
 
+        self.logs_catchup()
         ex = re.compile(regex)
         for l in self.logs[start:]:
             if ex.search(l):
@@ -254,6 +289,8 @@ class TailableProc(object):
     def is_in_stderr(self, regex):
         """Look for `regex` in stderr."""
 
+        assert self.stderr_redir
+        self.logs_catchup()
         ex = re.compile(regex)
         for l in self.err_logs:
             if ex.search(l):
@@ -266,9 +303,12 @@ class TailableProc(object):
     def wait_for_logs(self, regexs, timeout=TIMEOUT):
         """Look for `regexs` in the logs.
 
-        We tail the stdout of the process and look for each regex in `regexs`,
-        starting from last of the previous waited-for log entries (if any).  We
-        fail if the timeout is exceeded or if the underlying process
+        The logs contain tailed stdout of the process. We look for each regex
+        in `regexs`, starting from `logsearch_start` which normally is the
+        position of the last found entry of a previous wait-for logs call.
+        The ordering inside `regexs` doesn't matter.
+
+        We fail if the timeout is exceeded or if the underlying process
         exits before all the `regexs` were found.
 
         If timeout is None, no time-out is applied.
@@ -276,31 +316,29 @@ class TailableProc(object):
         logging.debug("Waiting for {} in the logs".format(regexs))
         exs = [re.compile(r) for r in regexs]
         start_time = time.time()
-        pos = self.logsearch_start
         while True:
-            if timeout is not None and time.time() > start_time + timeout:
-                print("Time-out: can't find {} in logs".format(exs))
-                for r in exs:
-                    if self.is_in_log(r):
-                        print("({} was previously in logs!)".format(r))
-                raise TimeoutError('Unable to find "{}" in logs.'.format(exs))
+            if self.logsearch_start >= len(self.logs):
+                if not self.logs_catchup():
+                    time.sleep(0.25)
 
-            with self.logs_cond:
-                if pos >= len(self.logs):
-                    if not self.running:
-                        raise ValueError('Process died while waiting for logs')
-                    self.logs_cond.wait(1)
-                    continue
+                if timeout is not None and time.time() > start_time + timeout:
+                    print("Time-out: can't find {} in logs".format(exs))
+                    for r in exs:
+                        if self.is_in_log(r):
+                            print("({} was previously in logs!)".format(r))
+                    raise TimeoutError('Unable to find "{}" in logs.'.format(exs))
+                continue
 
-                for r in exs.copy():
-                    self.logsearch_start = pos + 1
-                    if r.search(self.logs[pos]):
-                        logging.debug("Found '%s' in logs", r)
-                        exs.remove(r)
-                        break
-                if len(exs) == 0:
-                    return self.logs[pos]
-                pos += 1
+            line = self.logs[self.logsearch_start]
+            self.logsearch_start += 1
+            for r in exs.copy():
+                if r.search(line):
+                    logging.debug("Found '%s' in logs", r)
+                    exs.remove(r)
+                    if len(exs) == 0:
+                        return line
+                    # Don't match same line with different regexs!
+                    break
 
     def wait_for_log(self, regex, timeout=TIMEOUT):
         """Look for `regex` in the logs.
@@ -353,7 +391,10 @@ class BitcoinD(TailableProc):
         TailableProc.__init__(self, bitcoin_dir, verbose=False)
 
         if rpcport is None:
-            rpcport = reserve()
+            self.reserved_rpcport = reserve_unused_port()
+            rpcport = self.reserved_rpcport
+        else:
+            self.reserved_rpcport = None
 
         self.bitcoin_dir = bitcoin_dir
         self.rpcport = rpcport
@@ -384,6 +425,10 @@ class BitcoinD(TailableProc):
         self.rpc = SimpleBitcoinProxy(btc_conf_file=self.conf_file)
         self.proxies = []
 
+    def __del__(self):
+        if self.reserved_rpcport is not None:
+            drop_unused_port(self.reserved_rpcport)
+
     def start(self):
         TailableProc.start(self)
         self.wait_for_log("Done loading", timeout=TIMEOUT)
@@ -411,7 +456,7 @@ class BitcoinD(TailableProc):
     # int > 0 := wait for at least N transactions
     # 'tx_id' := wait for one transaction id given as a string
     # ['tx_id1', 'tx_id2'] := wait until all of the specified transaction IDs
-    def generate_block(self, numblocks=1, wait_for_mempool=0):
+    def generate_block(self, numblocks=1, wait_for_mempool=0, to_addr=None):
         if wait_for_mempool:
             if isinstance(wait_for_mempool, str):
                 wait_for_mempool = [wait_for_mempool]
@@ -428,7 +473,9 @@ class BitcoinD(TailableProc):
         ))
 
         # As of 0.16, generate() is removed; use generatetoaddress.
-        return self.rpc.generatetoaddress(numblocks, self.rpc.getnewaddress())
+        if to_addr is None:
+            to_addr = self.rpc.getnewaddress()
+        return self.rpc.generatetoaddress(numblocks, to_addr)
 
     def simple_reorg(self, height, shift=0):
         """
@@ -514,8 +561,17 @@ class ElementsD(BitcoinD):
 
 
 class LightningD(TailableProc):
-    def __init__(self, lightning_dir, bitcoindproxy, port=9735, random_hsm=False, node_id=0):
-        TailableProc.__init__(self, lightning_dir)
+    def __init__(
+            self,
+            lightning_dir,
+            bitcoindproxy,
+            port=9735,
+            random_hsm=False,
+            node_id=0,
+            grpc_port=None
+    ):
+        # We handle our own version of verbose, below.
+        TailableProc.__init__(self, lightning_dir, verbose=False)
         self.executable = 'lightningd'
         self.lightning_dir = lightning_dir
         self.port = port
@@ -523,6 +579,7 @@ class LightningD(TailableProc):
         self.disconnect_file = None
 
         self.rpcproxy = bitcoindproxy
+        self.env['CLN_PLUGIN_LOG'] = "gl_plugin=trace,gl_rpc=trace,gl_grpc=trace,debug"
 
         self.opts = LIGHTNINGD_CONFIG.copy()
         opts = {
@@ -539,6 +596,9 @@ class LightningD(TailableProc):
             'bitcoin-datadir': lightning_dir,
         }
 
+        if grpc_port is not None:
+            opts['grpc-port'] = grpc_port
+
         for k, v in opts.items():
             self.opts[k] = v
 
@@ -554,6 +614,11 @@ class LightningD(TailableProc):
             self.opts['dev-fast-gossip'] = None
             self.opts['dev-bitcoind-poll'] = 1
         self.prefix = 'lightningd-%d' % (node_id)
+        # Log to stdout so we see it in failure cases, and log file for TailableProc.
+        self.opts['log-file'] = ['-', os.path.join(lightning_dir, "log")]
+        self.opts['log-prefix'] = self.prefix + ' '
+        # In case you want specific ordering!
+        self.early_opts = []
 
     def cleanup(self):
         # To force blackhole to exit, disconnect file must be truncated!
@@ -574,17 +639,16 @@ class LightningD(TailableProc):
             else:
                 opts.append("--{}={}".format(k, v))
 
-        return self.cmd_prefix + [self.executable] + opts
+        return self.cmd_prefix + [self.executable] + self.early_opts + opts
 
-    def start(self, stdin=None, stdout=None, stderr=None,
-              wait_for_initialized=True):
+    def start(self, stdin=None, wait_for_initialized=True, stderr_redir=False):
         self.opts['bitcoin-rpcport'] = self.rpcproxy.rpcport
-        TailableProc.start(self, stdin, stdout, stderr)
+        TailableProc.start(self, stdin, stdout_redir=False, stderr_redir=stderr_redir)
         if wait_for_initialized:
             self.wait_for_log("Server started with public key")
         logging.info("LightningD started")
 
-    def wait(self, timeout=10):
+    def wait(self, timeout=TIMEOUT):
         """Wait for the daemon to stop for up to timeout seconds
 
         Returns the returncode of the process, None if the process did
@@ -612,22 +676,38 @@ class PrettyPrintingLightningRpc(LightningRpc):
             patch_json,
         )
         self.jsonschemas = jsonschemas
+        self.check_request_schemas = True
 
-    def call(self, method, payload=None):
-        id = self.next_id
+    def call(self, method, payload=None, cmdprefix=None, filter=None):
+        id = self.get_json_id(method, cmdprefix)
+        schemas = self.jsonschemas.get(method)
         self.logger.debug(json.dumps({
             "id": id,
             "method": method,
-            "params": payload
+            "params": payload,
+            "filter": filter,
         }, indent=2))
-        res = LightningRpc.call(self, method, payload)
+
+        # We only check payloads which are dicts, which is what we
+        # usually use: there are some cases which tests [] params,
+        # which we ignore.
+        if schemas and schemas[0] and isinstance(payload, dict) and self.check_request_schemas:
+            # fields which are None are explicitly removed, so do that now
+            testpayload = {}
+            for k, v in payload.items():
+                if v is not None:
+                    testpayload[k] = v
+            schemas[0].validate(testpayload)
+
+        res = LightningRpc.call(self, method, payload, cmdprefix, filter)
         self.logger.debug(json.dumps({
             "id": id,
             "result": res
         }, indent=2))
 
-        if method in self.jsonschemas:
-            self.jsonschemas[method].validate(res)
+        # FIXME: if filter set, just remove "required" from schemas?
+        if schemas and schemas[1] and filter is None and self._filter is None:
+            schemas[1].validate(res)
 
         return res
 
@@ -640,6 +720,7 @@ class LightningNode(object):
                  allow_bad_gossip=False,
                  db=None, port=None, disconnect=None, random_hsm=None, options=None,
                  jsonschemas={},
+                 valgrind_plugins=True,
                  **kwargs):
         self.bitcoin = bitcoind
         self.executor = executor
@@ -649,17 +730,22 @@ class LightningNode(object):
         self.allow_bad_gossip = allow_bad_gossip
         self.allow_warning = allow_warning
         self.db = db
+        self.lightning_dir = Path(lightning_dir)
 
         # Assume successful exit
         self.rc = 0
 
-        socket_path = os.path.join(lightning_dir, TEST_NETWORK, "lightning-rpc").format(node_id)
-        self.rpc = PrettyPrintingLightningRpc(socket_path, self.executor, jsonschemas=jsonschemas)
+        # Ensure we have an RPC we can use to talk to the node
+        self._create_rpc(jsonschemas)
+
+        self.gossip_store = GossipStore(Path(lightning_dir, TEST_NETWORK, "gossip_store"))
 
         self.daemon = LightningD(
             lightning_dir, bitcoindproxy=bitcoind.get_proxy(),
-            port=port, random_hsm=random_hsm, node_id=node_id
+            port=port, random_hsm=random_hsm, node_id=node_id,
+            grpc_port=self.grpc_port,
         )
+
         # If we have a disconnect string, dump it to a file for daemon.
         if disconnect:
             self.daemon.disconnect_file = os.path.join(lightning_dir, TEST_NETWORK, "dev_disconnect")
@@ -675,6 +761,7 @@ class LightningNode(object):
                 self.daemon.opts["dev-debugger"] = os.getenv("DEBUG_SUBD")
             if valgrind:
                 self.daemon.env["LIGHTNINGD_DEV_NO_BACKTRACE"] = "1"
+                self.daemon.opts["dev-no-plugin-checksum"] = None
             else:
                 # Under valgrind, scanning can access uninitialized mem.
                 self.daemon.env["LIGHTNINGD_DEV_MEMLEAK"] = "1"
@@ -689,17 +776,61 @@ class LightningNode(object):
         if dsn is not None:
             self.daemon.opts['wallet'] = dsn
         if valgrind:
+            trace_skip_pattern = '*python*,*bitcoin-cli*,*elements-cli*,*cln-grpc'
+            if not valgrind_plugins:
+                trace_skip_pattern += ',*plugins*'
             self.daemon.cmd_prefix = [
                 'valgrind',
                 '-q',
                 '--trace-children=yes',
-                '--trace-children-skip=*python*,*bitcoin-cli*,*elements-cli*',
+                '--trace-children-skip={}'.format(trace_skip_pattern),
                 '--error-exitcode=7',
                 '--log-file={}/valgrind-errors.%p'.format(self.daemon.lightning_dir)
             ]
             # Reduce precision of errors, speeding startup and reducing memory greatly:
             if SLOW_MACHINE:
                 self.daemon.cmd_prefix += ['--read-inline-info=no']
+
+    def _create_rpc(self, jsonschemas):
+        """Prepares anything related to the RPC.
+        """
+        if os.environ.get('CLN_TEST_GRPC') == '1':
+            logging.info("Switching to GRPC based RPC for tests")
+            self._create_grpc_rpc()
+        else:
+            self._create_jsonrpc_rpc(jsonschemas)
+
+    def _create_grpc_rpc(self):
+        self.grpc_port = reserve_unused_port()
+        d = self.lightning_dir / TEST_NETWORK
+        d.mkdir(parents=True, exist_ok=True)
+
+        # Copy all the certificates and keys into place:
+        with (d / "ca.pem").open(mode='wb') as f:
+            f.write(grpc.DUMMY_CA_PEM)
+
+        with (d / "ca-key.pem").open(mode='wb') as f:
+            f.write(grpc.DUMMY_CA_KEY_PEM)
+
+        # Now the node will actually start up and use them, so we can
+        # create the RPC instance.
+        self.rpc = grpc.LightningGrpc(
+            host='localhost',
+            port=self.grpc_port,
+            root_certificates=grpc.DUMMY_CA_PEM,
+            private_key=grpc.DUMMY_CLIENT_KEY_PEM,
+            certificate_chain=grpc.DUMMY_CLIENT_PEM
+        )
+
+    def _create_jsonrpc_rpc(self, jsonschemas):
+        socket_path = self.lightning_dir / TEST_NETWORK / "lightning-rpc"
+        self.grpc_port = None
+
+        self.rpc = PrettyPrintingLightningRpc(
+            str(socket_path),
+            self.executor,
+            jsonschemas=jsonschemas
+        )
 
     def connect(self, remote_node):
         self.rpc.connect(remote_node.info['id'], '127.0.0.1', remote_node.daemon.port)
@@ -713,21 +844,16 @@ class LightningNode(object):
         if connect and not self.is_connected(remote_node):
             self.connect(remote_node)
 
-        fundingtx = self.rpc.fundchannel(remote_node.info['id'], capacity)
-
-        # Wait for the funding transaction to be in bitcoind's mempool
-        wait_for(lambda: fundingtx['txid'] in self.bitcoin.rpc.getrawmempool())
+        res = self.rpc.fundchannel(remote_node.info['id'], capacity)
 
         if confirm or wait_for_announce:
-            self.bitcoin.generate_block(1)
+            self.bitcoin.generate_block(1, wait_for_mempool=res['txid'])
 
         if wait_for_announce:
             self.bitcoin.generate_block(5)
+            wait_for(lambda: ['alias' in e for e in self.rpc.listnodes(remote_node.info['id'])['nodes']])
 
-        if confirm or wait_for_announce:
-            self.daemon.wait_for_log(
-                r'Funding tx {} depth'.format(fundingtx['txid']))
-        return {'address': addr, 'wallettxid': wallettxid, 'fundingtx': fundingtx}
+        return {'address': addr, 'wallettxid': wallettxid, 'fundingtx': res['tx']}
 
     def fundwallet(self, sats, addrtype="p2sh-segwit", mine_block=True):
         addr = self.rpc.newaddr(addrtype)[addrtype]
@@ -763,22 +889,15 @@ class LightningNode(object):
 
         self.rpc.connect(remote_node.info['id'], 'localhost', remote_node.port)
 
-        # Make sure the fundchannel is confirmed.
-        num_tx = len(self.bitcoin.rpc.getrawmempool())
         res = self.rpc.fundchannel(remote_node.info['id'], chan_capacity, feerate='slow', minconf=0, announce=announce, push_msat=Millisatoshi(chan_capacity * 500))
-        wait_for(lambda: len(self.bitcoin.rpc.getrawmempool()) == num_tx + 1)
-        blockid = self.bitcoin.generate_block(1)[0]
+        blockid = self.bitcoin.generate_block(1, wait_for_mempool=res['txid'])[0]
 
         # Generate the scid.
-        outnum = get_tx_p2wsh_outnum(self.bitcoin, res['tx'], total_capacity)
-        if outnum is None:
-            raise ValueError("no outnum found. capacity {} tx {}".format(total_capacity, res['tx']))
-
         for i, txid in enumerate(self.bitcoin.rpc.getblock(blockid)['tx']):
             if txid == res['txid']:
                 txnum = i
 
-        return '{}x{}x{}'.format(self.bitcoin.rpc.getblockcount(), txnum, outnum)
+        return '{}x{}x{}'.format(self.bitcoin.rpc.getblockcount(), txnum, res['outnum'])
 
     def getactivechannels(self):
         return [c for c in self.rpc.listchannels()['channels'] if c['active']]
@@ -801,12 +920,13 @@ class LightningNode(object):
             info = self.rpc.getinfo()
         return 'warning_bitcoind_sync' not in info and 'warning_lightningd_sync' not in info
 
-    def start(self, wait_for_bitcoind_sync=True, stderr=None):
-        self.daemon.start(stderr=stderr)
+    def start(self, wait_for_bitcoind_sync=True, stderr_redir=False):
+        self.daemon.start(stderr_redir=stderr_redir)
         # Cache `getinfo`, we'll be using it a lot
         self.info = self.rpc.getinfo()
         # This shortcut is sufficient for our simple tests.
         self.port = self.info['binding'][0]['port']
+        self.gossip_store.open()  # Reopen the gossip_store now that we should have one
         if wait_for_bitcoind_sync and not self.is_synced_with_bitcoin(self.info):
             wait_for(lambda: self.is_synced_with_bitcoin())
 
@@ -827,7 +947,6 @@ class LightningNode(object):
         if self.rc is None:
             self.rc = self.daemon.stop()
 
-        self.daemon.save_log()
         self.daemon.cleanup()
 
         if self.rc != 0 and not self.may_fail:
@@ -879,8 +998,7 @@ class LightningNode(object):
         res = self.rpc.fundchannel(l2.info['id'], amount,
                                    announce=announce_channel,
                                    **kwargs)
-        wait_for(lambda: res['txid'] in self.bitcoin.rpc.getrawmempool())
-        blockid = self.bitcoin.generate_block(1)[0]
+        blockid = self.bitcoin.generate_block(1, wait_for_mempool=res['txid'])[0]
 
         for i, txid in enumerate(self.bitcoin.rpc.getblock(blockid)['tx']):
             if txid == res['txid']:
@@ -1003,18 +1121,25 @@ class LightningNode(object):
         invoices = dst.rpc.listinvoices(label)['invoices']
         assert len(invoices) == 1 and invoices[0]['status'] == 'unpaid'
 
+        # Pick first normal channel.
+        scid = [c['short_channel_id'] for c in only_one(self.rpc.listpeers(dst_id)['peers'])['channels']
+                if c['state'] == 'CHANNELD_NORMAL'][0]
+
         routestep = {
-            'msatoshi': amt,
+            'amount_msat': amt,
             'id': dst_id,
             'delay': 5,
-            'channel': '1x1x1'  # note: can be bogus for 1-hop direct payments
+            'channel': scid
         }
 
         # sendpay is async now
-        self.rpc.sendpay([routestep], rhash, payment_secret=psecret)
+        self.rpc.sendpay([routestep], rhash, payment_secret=psecret, bolt11=inv['bolt11'])
         # wait for sendpay to comply
         result = self.rpc.waitsendpay(rhash)
         assert(result.get('status') == 'complete')
+
+        # Make sure they're all settled, in case we quickly mine blocks!
+        dst.wait_for_htlcs()
 
     # This helper sends all money to a peer until even 1 msat can't get through.
     def drain(self, peer):
@@ -1098,6 +1223,7 @@ class LightningNode(object):
                                timeout=TIMEOUT,
                                stdout=subprocess.PIPE).stdout.strip()
         out = subprocess.run(['devtools/gossipwith',
+                              '--features=40',  # OPT_GOSSIP_QUERIES
                               '--timeout-after={}'.format(int(math.sqrt(TIMEOUT) + 1)),
                               '{}@localhost:{}'.format(self.info['id'],
                                                        self.port),
@@ -1126,6 +1252,39 @@ class LightningNode(object):
             return opt[config_name]
         except RpcError:
             return None
+
+    def dev_pay(self, bolt11, amount_msat=None, label=None, riskfactor=None,
+                maxfeepercent=None, retry_for=None,
+                maxdelay=None, exemptfee=None, use_shadow=True, exclude=[]):
+        """Wrapper for rpc.dev_pay which suppresses the request schema"""
+        # FIXME? dev options are not in schema
+        old_check = self.rpc.check_request_schemas
+        self.rpc.check_request_schemas = False
+        ret = self.rpc.dev_pay(bolt11, amount_msat, label, riskfactor,
+                               maxfeepercent, retry_for,
+                               maxdelay, exemptfee, use_shadow, exclude)
+        self.rpc.check_request_schemas = old_check
+        return ret
+
+    def dev_invoice(self, amount_msat, label, description, expiry=None, fallbacks=None, preimage=None, exposeprivatechannels=None, cltv=None, dev_routes=None):
+        """Wrapper for rpc.invoice() with dev-routes option"""
+        payload = {
+            "amount_msat": amount_msat,
+            "label": label,
+            "description": description,
+            "expiry": expiry,
+            "fallbacks": fallbacks,
+            "preimage": preimage,
+            "exposeprivatechannels": exposeprivatechannels,
+            "cltv": cltv,
+            "dev-routes": dev_routes,
+        }
+        # FIXME? dev options are not in schema
+        old_check = self.rpc.check_request_schemas
+        self.rpc.check_request_schemas = False
+        ret = self.rpc.call("invoice", payload)
+        self.rpc.check_request_schemas = old_check
+        return ret
 
 
 @contextmanager
@@ -1223,6 +1382,7 @@ class NodeFactory(object):
         self.testname = testname
         self.next_id = 1
         self.nodes = []
+        self.reserved_ports = []
         self.executor = executor
         self.bitcoind = bitcoind
         self.directory = directory
@@ -1255,10 +1415,6 @@ class NodeFactory(object):
         cli_opts = {k: v for k, v in opts.items() if k not in node_opt_keys}
         return node_opts, cli_opts
 
-    def get_next_port(self):
-        with self.lock:
-            return reserve()
-
     def get_node_id(self):
         """Generate a unique numeric ID for a lightning node
         """
@@ -1279,23 +1435,31 @@ class NodeFactory(object):
 
         assert len(opts) == num_nodes
 
+        # Only trace one random node's plugins, to avoid OOM.
+        if SLOW_MACHINE:
+            valgrind_plugins = [False] * num_nodes
+            valgrind_plugins[random.randint(0, num_nodes - 1)] = True
+        else:
+            valgrind_plugins = [True] * num_nodes
+
         jobs = []
         for i in range(num_nodes):
             node_opts, cli_opts = self.split_options(opts[i])
             jobs.append(self.executor.submit(
                 self.get_node, options=cli_opts,
-                node_id=self.get_node_id(), **node_opts
+                node_id=self.get_node_id(), **node_opts,
+                valgrind_plugins=valgrind_plugins[i]
             ))
 
         return [j.result() for j in jobs]
 
     def get_node(self, node_id=None, options=None, dbfile=None,
-                 feerates=(15000, 11000, 7500, 3750), start=True,
-                 wait_for_bitcoind_sync=True, may_fail=False,
+                 bkpr_dbfile=None, feerates=(15000, 11000, 7500, 3750),
+                 start=True, wait_for_bitcoind_sync=True, may_fail=False,
                  expect_fail=False, cleandir=True, **kwargs):
         self.throttler.wait()
         node_id = self.get_node_id() if not node_id else node_id
-        port = self.get_next_port()
+        port = reserve_unused_port()
 
         lightning_dir = os.path.join(
             self.directory, "lightning-{}/".format(node_id))
@@ -1306,6 +1470,7 @@ class NodeFactory(object):
         # Get the DB backend DSN we should be using for this test and this
         # node.
         db = self.db_provider.get_db(os.path.join(lightning_dir, TEST_NETWORK), self.testname, node_id)
+        db.provider = self.db_provider
         node = self.node_cls(
             node_id, lightning_dir, self.bitcoind, self.executor, self.valgrind, db=db,
             port=port, options=options, may_fail=may_fail or expect_fail,
@@ -1317,20 +1482,22 @@ class NodeFactory(object):
         node.set_feerates(feerates, False)
 
         self.nodes.append(node)
+        self.reserved_ports.append(port)
         if dbfile:
             out = open(os.path.join(node.daemon.lightning_dir, TEST_NETWORK,
                                     'lightningd.sqlite3'), 'xb')
             with lzma.open(os.path.join('tests/data', dbfile), 'rb') as f:
                 out.write(f.read())
 
+        if bkpr_dbfile:
+            out = open(os.path.join(node.daemon.lightning_dir, TEST_NETWORK,
+                                    'accounts.sqlite3'), 'xb')
+            with lzma.open(os.path.join('tests/data', bkpr_dbfile), 'rb') as f:
+                out.write(f.read())
+
         if start:
             try:
-                # Capture stderr if we're failing
-                if expect_fail:
-                    stderr = subprocess.PIPE
-                else:
-                    stderr = None
-                node.start(wait_for_bitcoind_sync, stderr=stderr)
+                node.start(wait_for_bitcoind_sync)
             except Exception:
                 if expect_fail:
                     return node
@@ -1339,7 +1506,7 @@ class NodeFactory(object):
         return node
 
     def join_nodes(self, nodes, fundchannel=True, fundamount=FUNDAMOUNT, wait_for_announce=False, announce_channels=True) -> None:
-        """Given nodes, connect them in a line, optionally funding a channel"""
+        """Given nodes, connect them in a line, optionally funding a channel, wait_for_announce waits for channel and node announcements"""
         assert not (wait_for_announce and not announce_channels), "You've asked to wait for an announcement that's not coming. (wait_for_announce=True,announce_channels=False)"
         connections = [(nodes[i], nodes[i + 1]) for i in range(len(nodes) - 1)]
 
@@ -1350,7 +1517,7 @@ class NodeFactory(object):
         # getpeers.
         if not fundchannel:
             for src, dst in connections:
-                dst.daemon.wait_for_log(r'{}-.*-chan#[0-9]*: Handed peer, entering loop'.format(src.info['id']))
+                dst.daemon.wait_for_log(r'{}-connectd: Handed peer, entering loop'.format(src.info['id']))
             return
 
         bitcoind = nodes[0].bitcoin
@@ -1365,10 +1532,8 @@ class NodeFactory(object):
         for src, dst in connections:
             txids.append(src.rpc.fundchannel(dst.info['id'], fundamount, announce=announce_channels)['txid'])
 
-        wait_for(lambda: set(txids).issubset(set(bitcoind.rpc.getrawmempool())))
-
         # Confirm all channels and wait for them to become usable
-        bitcoind.generate_block(1)
+        bitcoind.generate_block(1, wait_for_mempool=txids)
         scids = []
         for src, dst in connections:
             wait_for(lambda: src.channel_state(dst) == 'CHANNELD_NORMAL')
@@ -1385,15 +1550,15 @@ class NodeFactory(object):
 
         bitcoind.generate_block(5)
 
-        # Make sure everyone sees all channels: we can cheat and
-        # simply check the ends (since it's a line).
-        nodes[0].wait_channel_active(scids[-1])
-        nodes[-1].wait_channel_active(scids[0])
-
-        # Make sure we have all node announcements, too (just check ends)
+        # Make sure everyone sees all channels, all other nodes
         for n in nodes:
-            for end in (nodes[0], nodes[-1]):
-                wait_for(lambda: 'alias' in only_one(end.rpc.listnodes(n.info['id'])['nodes']))
+            for scid in scids:
+                n.wait_channel_active(scid)
+
+        # Make sure we have all node announcements, too
+        for n in nodes:
+            for n2 in nodes:
+                wait_for(lambda: 'alias' in only_one(n.rpc.listnodes(n2.info['id'])['nodes']))
 
     def line_graph(self, num_nodes, fundchannel=True, fundamount=FUNDAMOUNT, wait_for_announce=False, opts=None, announce_channels=True):
         """ Create nodes, connect them and optionally fund channels.
@@ -1430,5 +1595,8 @@ class NodeFactory(object):
                     self.nodes[i].daemon.lightning_dir,
                     json.dumps(leaks, sort_keys=True, indent=4)
                 ))
+
+        for p in self.reserved_ports:
+            drop_unused_port(p)
 
         return not unexpected_fail, err_msgs

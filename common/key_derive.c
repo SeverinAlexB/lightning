@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/privkey.h>
 #include <bitcoin/pubkey.h>
 #include <common/key_derive.h>
@@ -83,7 +84,7 @@ bool derive_simple_privkey(const struct secret *base_secret,
 #endif
 
 	key->secret = *base_secret;
-	if (secp256k1_ec_privkey_tweak_add(secp256k1_ctx, key->secret.data,
+	if (secp256k1_ec_seckey_tweak_add(secp256k1_ctx, key->secret.data,
 					   sha.u.u8) != 1)
 		return false;
 #ifdef SUPERVERBOSE
@@ -206,7 +207,7 @@ bool derive_revocation_privkey(const struct secret *base_secret,
 #endif
 
 	key->secret = *base_secret;
-	if (secp256k1_ec_privkey_tweak_mul(secp256k1_ctx, key->secret.data,
+	if (secp256k1_ec_seckey_tweak_mul(secp256k1_ctx, key->secret.data,
 					   sha.u.u8)
 	    != 1)
 		return false;
@@ -228,7 +229,7 @@ bool derive_revocation_privkey(const struct secret *base_secret,
 #endif
 
 	part2 = *per_commitment_secret;
-	if (secp256k1_ec_privkey_tweak_mul(secp256k1_ctx, part2.data,
+	if (secp256k1_ec_seckey_tweak_mul(secp256k1_ctx, part2.data,
 					   sha.u.u8) != 1)
 		return false;
 #ifdef SUPERVERBOSE
@@ -238,7 +239,7 @@ bool derive_revocation_privkey(const struct secret *base_secret,
 		printf("# = 0x%s\n", tal_hexstr(tmpctx, &part2, sizeof(part2)));
 #endif
 
-	if (secp256k1_ec_privkey_tweak_add(secp256k1_ctx, key->secret.data,
+	if (secp256k1_ec_seckey_tweak_add(secp256k1_ctx, key->secret.data,
 					   part2.data) != 1)
 		return false;
 

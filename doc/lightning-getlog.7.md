@@ -4,7 +4,7 @@ lightning-getlog -- Command to show logs.
 SYNOPSIS
 --------
 
-**getlog** \[*level*\]
+**getlog** [*level*]
 
 DESCRIPTION
 -----------
@@ -30,27 +30,31 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **created_at** (string): UNIX timestamp with 9 decimal places, when logging was initialized
-- **bytes_used** (u32): The number of bytes used by logging records
-- **bytes_max** (u32): The bytes_used values at which records will be trimmed 
+
+- **created\_at** (string): UNIX timestamp with 9 decimal places, when logging was initialized
+- **bytes\_used** (u32): The number of bytes used by logging records
+- **bytes\_max** (u32): The bytes_used values at which records will be trimmed 
 - **log** (array of objects):
   - **type** (string) (one of "SKIPPED", "BROKEN", "UNUSUAL", "INFO", "DEBUG", "IO_IN", "IO_OUT")
 
   If **type** is "SKIPPED":
-    - **num_skipped** (u32): number of unprinted log entries (deleted or below *level* parameter)
+
+    - **num\_skipped** (u32): number of unprinted log entries (deleted or below *level* parameter)
 
   If **type** is "BROKEN", "UNUSUAL", "INFO" or "DEBUG":
+
     - **time** (string): UNIX timestamp with 9 decimal places after **created_at**
     - **source** (string): The particular logbook this was found in
     - **log** (string): The actual log message
-    - **node_id** (pubkey, optional): The peer this is associated with
+    - **node\_id** (pubkey, optional): The peer this is associated with
 
   If **type** is "IO_IN" or "IO_OUT":
+
     - **time** (string): Seconds after **created_at**, with 9 decimal places
     - **source** (string): The particular logbook this was found in
     - **log** (string): The associated log message
     - **data** (hex): The IO which occurred
-    - **node_id** (pubkey, optional): The peer this is associated with
+    - **node\_id** (pubkey, optional): The peer this is associated with
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -90,4 +94,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:155507c9105521bb4c113232d9bc6fd585cce269303ee8e7e27ea803ca8405cf)
+[comment]: # ( SHA256STAMP:0f6e346c57e59aa8ebe0aee9bcb7ded6f66776752e55c4c125f4a80d98cf90fd)

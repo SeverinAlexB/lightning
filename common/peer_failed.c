@@ -1,9 +1,10 @@
+#include "config.h"
 #include <assert.h>
 #include <ccan/breakpoint/breakpoint.h>
 #include <ccan/tal/str/str.h>
-#include <common/crypto_sync.h>
 #include <common/peer_billboard.h>
 #include <common/peer_failed.h>
+#include <common/peer_io.h>
 #include <common/peer_status_wiregen.h>
 #include <common/status.h>
 #include <common/status_wiregen.h>
@@ -18,8 +19,6 @@ peer_fatal_continue(const u8 *msg TAKES, const struct per_peer_state *pps)
  	status_send(msg);
 
 	status_send_fd(pps->peer_fd);
-	status_send_fd(pps->gossip_fd);
-	status_send_fd(pps->gossip_store_fd);
 	exit(0x80 | (reason & 0xFF));
 }
 
@@ -37,13 +36,12 @@ peer_failed(struct per_peer_state *pps,
 	} else {
 		msg = towire_errorfmt(desc, channel_id, "%s", desc);
 	}
-	sync_crypto_write(pps, msg);
+	peer_write(pps, msg);
 
 	/* Tell master the error so it can re-xmit. */
 	msg = towire_status_peer_error(NULL, channel_id,
 				       desc,
 				       warn,
-				       pps,
 				       msg);
 	peer_billboard(true, desc);
 	peer_fatal_continue(take(msg), pps);
@@ -86,7 +84,16 @@ void peer_failed_received_errmsg(struct per_peer_state *pps,
 {
 	u8 *msg;
 
-	msg = towire_status_peer_error(NULL, channel_id, desc, warning, pps,
+	/* LND sends "internal error" and we close the channel.  But
+	 * prior to 0.11 we would turn this into a warning, and they
+	 * would recover after a reconnect.  So we downgrade, but snark
+	 * about it in the logs. */
+	if (!warning && strends(desc, "internal error")) {
+		status_unusual("lnd sent 'internal error':"
+			       " let's give it some space");
+		warning = true;
+	}
+	msg = towire_status_peer_error(NULL, channel_id, desc, warning,
 				       NULL);
 	peer_billboard(true, "Received %s", desc);
 	peer_fatal_continue(take(msg), pps);

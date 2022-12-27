@@ -21,8 +21,9 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **channel_id** (hex): the channel id of the aborted channel (always 64 characters)
-- **channel_canceled** (boolean): whether this is completely canceled (there may be remaining in-flight transactions)
+
+- **channel\_id** (hex): the channel id of the aborted channel (always 64 characters)
+- **channel\_canceled** (boolean): whether this is completely canceled (there may be remaining in-flight transactions)
 - **reason** (string): usually "Abort requested", but if it happened to fail at the same time it could be different
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -54,4 +55,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:898dd91de80eb022badf10bb572af5ad9211f17364207a1837f15dd0bc252eca)
+[comment]: # ( SHA256STAMP:ed449af5b443c981faaff360cb2276816bbc7cd80f85fdb4403987c29d65baed)

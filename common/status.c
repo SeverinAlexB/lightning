@@ -98,13 +98,25 @@ static void status_io_full(enum log_level iodir,
 	status_send(take(towire_status_io(NULL, iodir, peer, who, p)));
 }
 
+static bool status_peer_io_filter_packettype(const u8 *p)
+{
+	int msg_type = fromwire_peektype(p);
+	switch (msg_type) {
+	case WIRE_PING:
+	case WIRE_PONG:
+		return true;
+	}
+	return false;
+}
+
 static void status_peer_io_short(enum log_level iodir,
 				 const struct node_id *peer,
 				 const u8 *p)
 {
-	status_peer_debug(peer, "%s %s",
-			  iodir == LOG_IO_OUT ? "peer_out" : "peer_in",
-			  peer_wire_name(fromwire_peektype(p)));
+	if (!status_peer_io_filter_packettype(p))
+		status_peer_debug(peer, "%s %s",
+				  iodir == LOG_IO_OUT ? "peer_out" : "peer_in",
+				  peer_wire_name(fromwire_peektype(p)));
 }
 
 void status_peer_io(enum log_level iodir,
@@ -113,7 +125,7 @@ void status_peer_io(enum log_level iodir,
 {
 	report_logging_io("SIGUSR1");
 	if (logging_io)
-		status_io_full(iodir, NULL, "", p);
+		status_io_full(iodir, peer, "", p);
 	/* We get a huge amount of gossip; don't log it */
 	else if (!is_msg_for_gossipd(p))
 		status_peer_io_short(iodir, peer, p);

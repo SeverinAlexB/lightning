@@ -7,7 +7,6 @@
 /* This must match the type_to_string_ cases. */
 union printable_types {
 	const struct pubkey *pubkey;
-	const struct point32 *point32;
 	const struct node_id *node_id;
 	const struct bitcoin_txid *bitcoin_txid;
 	const struct bitcoin_blkid *bitcoin_blkid;
@@ -15,8 +14,6 @@ union printable_types {
 	const struct sha256 *sha256;
 	const struct sha256_double *sha256_double;
 	const struct ripemd160 *ripemd160;
-	const struct rel_locktime *rel_locktime;
-	const struct abs_locktime *abs_locktime;
 	const struct bitcoin_tx *bitcoin_tx;
 	const struct htlc *htlc;
 	const struct preimage *preimage;

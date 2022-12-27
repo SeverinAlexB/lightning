@@ -6,12 +6,15 @@
 
 struct channel;
 struct lightningd;
-struct per_peer_state;
+struct peer_fd;
 
-void resolve_close_command(struct lightningd *ld, struct channel *channel,
-			   bool cooperative);
+/* Resolve a close command for a channel that will be closed soon: returns
+ * the cmd_id of one, if any (allocated off ctx). */
+const char *resolve_close_command(const tal_t *ctx,
+				  struct lightningd *ld, struct channel *channel,
+				  bool cooperative);
 
 void peer_start_closingd(struct channel *channel,
-			 struct per_peer_state *pps);
+			 struct peer_fd *peer_fd);
 
 #endif /* LIGHTNING_LIGHTNINGD_CLOSING_CONTROL_H */

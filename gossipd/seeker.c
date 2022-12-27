@@ -1,4 +1,5 @@
 /* This contains the code which actively seeks out gossip from peers */
+#include "config.h"
 #include <bitcoin/chainparams.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/asort/asort.h>
@@ -35,10 +36,6 @@ enum seeker_state {
 	/* Asking a peer for stale scids. */
 	ASKING_FOR_STALE_SCIDS,
 };
-
-#if DEVELOPER
-bool dev_suppress_gossip;
-#endif
 
 /* Gossip we're seeking at the moment. */
 struct seeker {
@@ -215,11 +212,6 @@ static void enable_gossip_stream(struct seeker *seeker, struct peer *peer)
 	const u32 polltime = GOSSIP_SEEKER_INTERVAL(seeker) * 10;
 	u32 start = seeker->daemon->rstate->last_timestamp;
 	u8 *msg;
-
-#if DEVELOPER
-	if (dev_suppress_gossip)
-		return;
-#endif
 
 	if (start > polltime)
 		start -= polltime;
@@ -871,11 +863,6 @@ static bool seek_any_unknown_nodes(struct seeker *seeker)
 /* Periodic timer to see how our gossip is going. */
 static void seeker_check(struct seeker *seeker)
 {
-#if DEVELOPER
-	if (dev_suppress_gossip)
-		goto out;
-#endif
-
 	/* We don't do anything until we're synced. */
 	if (seeker->daemon->current_blockheight == 0)
 		goto out;
@@ -915,10 +902,6 @@ void seeker_setup_peer_gossip(struct seeker *seeker, struct peer *peer)
 	if (!peer->gossip_queries_feature)
 		return;
 
-#if DEVELOPER
-	if (dev_suppress_gossip)
-		return;
-#endif
 	/* Don't start gossiping until we're synced. */
 	if (seeker->daemon->current_blockheight == 0)
 		return;

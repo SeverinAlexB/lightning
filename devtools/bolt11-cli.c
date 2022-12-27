@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/address.h>
 #include <bitcoin/base58.h>
 #include <bitcoin/privkey.h>
@@ -53,7 +54,6 @@ int main(int argc, char *argv[])
 	const char *method;
 	struct bolt11 *b11;
 	struct bolt11_field *extra;
-	size_t i;
 	char *fail, *description = NULL;
 
 	common_setup(argv[0]);
@@ -86,7 +86,7 @@ int main(int argc, char *argv[])
 	if (!b11)
 		errx(ERROR_BAD_DECODE, "%s", fail);
 
-	printf("currency: %s\n", b11->chain->bip173_name);
+	printf("currency: %s\n", b11->chain->lightning_hrp);
 	printf("timestamp: %"PRIu64" (%s)\n",
 	       b11->timestamp, fmt_time(ctx, b11->timestamp));
 	printf("expiry: %"PRIu64" (%s)\n",
@@ -119,7 +119,7 @@ int main(int argc, char *argv[])
 		}
 		printf("\n");
 	}
-	for (i = 0; i < tal_count(b11->fallbacks); i++) {
+	for (size_t i = 0; i < tal_count(b11->fallbacks); i++) {
                 struct bitcoin_address pkh;
                 struct ripemd160 sh;
                 struct sha256 wsh;
@@ -135,19 +135,19 @@ int main(int argc, char *argv[])
 					      b11->chain,
 					      &sh));
                 } else if (is_p2wpkh(b11->fallbacks[i], &pkh)) {
-                        char out[73 + strlen(b11->chain->bip173_name)];
-                        if (segwit_addr_encode(out, b11->chain->bip173_name, 0,
+                        char out[73 + strlen(b11->chain->onchain_hrp)];
+                        if (segwit_addr_encode(out, b11->chain->onchain_hrp, 0,
                                                (const u8 *)&pkh, sizeof(pkh)))
 				printf("fallback-P2WPKH: %s\n", out);
                 } else if (is_p2wsh(b11->fallbacks[i], &wsh)) {
-                        char out[73 + strlen(b11->chain->bip173_name)];
-                        if (segwit_addr_encode(out, b11->chain->bip173_name, 0,
+                        char out[73 + strlen(b11->chain->onchain_hrp)];
+                        if (segwit_addr_encode(out, b11->chain->onchain_hrp, 0,
                                                (const u8 *)&wsh, sizeof(wsh)))
 				printf("fallback-P2WSH: %s\n", out);
                 }
         }
 
-	for (i = 0; i < tal_count(b11->routes); i++) {
+	for (size_t i = 0; i < tal_count(b11->routes); i++) {
 		printf("route: (node/chanid/fee/expirydelta) ");
 		for (size_t n = 0; n < tal_count(b11->routes[i]); n++) {
 			printf(" %s/%s/%u/%u/%u",
@@ -162,8 +162,13 @@ int main(int argc, char *argv[])
 		printf("\n");
 	}
 
+	if (b11->metadata)
+		printf("metadata: %s\n",
+		       tal_hex(ctx, b11->metadata));
+
 	list_for_each(&b11->extra_fields, extra, list) {
 		char *data = tal_arr(ctx, char, tal_count(extra->data)+1);
+		size_t i;
 
 		for (i = 0; i < tal_count(extra->data); i++)
 			data[i] = bech32_charset[extra->data[i]];

@@ -4,8 +4,8 @@ lightning-getroute -- Command for routing a payment (low-level)
 SYNOPSIS
 --------
 
-**getroute** *id* *msatoshi* *riskfactor* \[*cltv*\] \[*fromid*\]
-\[*fuzzpercent*\] \[*exclude*\] \[*maxhops*\]
+**getroute** *id* *msatoshi* *riskfactor* [*cltv*] [*fromid*]
+[*fuzzpercent*] [*exclude*] [*maxhops*]
 
 DESCRIPTION
 -----------
@@ -39,8 +39,8 @@ route generated. 0.0 means the exact fee of that channel is used, while
 100.0 means the fee used might be from 0 to twice the actual fee. The
 default is 5.0, or up to 5% fee distortion.
 
-*exclude* is a JSON array of short-channel-id/direction (e.g. \[
-"564334x877x1/0", "564195x1292x0/1" \]) or node-id which should be excluded
+*exclude* is a JSON array of short-channel-id/direction (e.g. [
+"564334x877x1/0", "564195x1292x0/1" ]) or node-id which should be excluded
 from consideration for routing. The default is not to exclude any channels
 or nodes. Note if the source or destination is excluded, the command result
 is undefined.
@@ -279,12 +279,13 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **route** is returned.  It is an array of objects, where each object contains:
+
 - **id** (pubkey): The node at the end of this hop
-- **channel** (short_channel_id): The channel joining these nodes
+- **channel** (short\_channel\_id): The channel joining these nodes
 - **direction** (u32): 0 if this channel is traversed from lesser to greater **id**, otherwise 1
-- **amount_msat** (msat): The amount expected by the node at the end of this hop
+- **amount\_msat** (msat): The amount expected by the node at the end of this hop
 - **delay** (u32): The total CLTV expected by the node at the end of this hop
-- **style** (string): The features understood by the destination node (one of "legacy", "tlv")
+- **style** (string): The features understood by the destination node (always "tlv")
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -309,4 +310,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:a297c66baaf5dd18528e4e8bc1bac3348536fed7be474f1c26475b88198a2c1e)
+[comment]: # ( SHA256STAMP:e592a238b3701399c1e8de45cb7186b9714742daefa2f33287019f860c1cc24d)

@@ -594,12 +594,12 @@ bool tal_set_name_(tal_t *ctx, const char *name, bool literal)
 
         /* Get rid of any old name */
         if (prop) {
-                struct name *name = (struct name *)*prop;
-                if (is_literal(&name->hdr))
+                struct name *oldname = (struct name *)*prop;
+                if (is_literal(&oldname->hdr))
                         *prop = NULL;
                 else {
-                        *prop = name->hdr.next;
-			freefn(name);
+                        *prop = oldname->hdr.next;
+			freefn(oldname);
                 }
         }
 
@@ -767,11 +767,17 @@ out:
 }
 
 void *tal_dup_(const tal_t *ctx, const void *p, size_t size,
-	       size_t n, size_t extra, const char *label)
+	       size_t n, size_t extra, bool nullok, const char *label)
 {
 	void *ret;
 	size_t nbytes = size;
 
+	if (nullok && p == NULL) {
+		/* take(NULL) works. */
+		(void)taken(p);
+		return NULL;
+	}
+	
 	if (!adjust_size(&nbytes, n)) {
 		if (taken(p))
 			tal_free(p);
@@ -800,6 +806,11 @@ void *tal_dup_(const tal_t *ctx, const void *p, size_t size,
 	if (ret)
 		memcpy(ret, p, nbytes);
 	return ret;
+}
+
+void *tal_dup_talarr_(const tal_t *ctx, const tal_t *src TAKES, const char *label)
+{
+	return tal_dup_(ctx, src, 1, tal_bytelen(src), 0, true, label);
 }
 
 void tal_set_backend(void *(*alloc_fn)(size_t size),
@@ -837,7 +848,7 @@ static void dump_node(unsigned int indent, const struct tal_hdr *t)
 		switch (p->type) {
 		case CHILDREN:
 			c = (struct children *)p;
-			fprintf(stderr, " CHILDREN(%p):parent=%p,children={%p,%p}\n",
+			fprintf(stderr, " CHILDREN(%p):parent=%p,children={%p,%p}",
 			       p, c->parent,
 			       c->children.n.prev, c->children.n.next);
 			break;

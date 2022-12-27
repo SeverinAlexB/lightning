@@ -4,7 +4,7 @@ lightning-waitblockheight -- Command for waiting for blocks on the blockchain
 SYNOPSIS
 --------
 
-**waitblockheight** *blockheight* \[*timeout*\]
+**waitblockheight** *blockheight* [*timeout*]
 
 DESCRIPTION
 -----------
@@ -21,6 +21,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **blockheight** (u32): The current block height (>= *blockheight* parameter)
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -38,4 +39,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:bf58d803775bc97144d92449d85de21189fa00fe9cec22bd64bc7cde87ebfe06)
+[comment]: # ( SHA256STAMP:e84e2ddf33c5abafe434ad0dcd76a3c1e6e2a2bdbba5dcf786f2a2ed80e61061)

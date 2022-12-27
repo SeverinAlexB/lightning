@@ -1,20 +1,21 @@
-#include "db.h"
-
+#include "config.h"
 #include <bitcoin/script.h>
 #include <ccan/array_size/array_size.h>
+#include <ccan/build_assert/build_assert.h>
 #include <ccan/mem/mem.h>
 #include <ccan/tal/str/str.h>
 #include <common/key_derive.h>
-#include <common/onionreply.h>
 #include <common/version.h>
+#include <db/bindings.h>
+#include <db/common.h>
+#include <db/exec.h>
+#include <db/utils.h>
 #include <errno.h>
 #include <hsmd/hsmd_wiregen.h>
 #include <lightningd/channel.h>
 #include <lightningd/plugin_hook.h>
-#include <wallet/db_common.h>
+#include <wallet/db.h>
 #include <wire/wire_sync.h>
-
-#define NSEC_IN_SEC 1000000000
 
 /* Small container for things that are needed by migrations. The
  * fields are guaranteed to be initialized and can be relied upon when
@@ -57,6 +58,14 @@ static void fillin_missing_local_basepoints(struct lightningd *ld,
 static void fillin_missing_channel_blockheights(struct lightningd *ld,
 						struct db *db,
 						const struct migration_context *mc);
+
+static void migrate_channels_scids_as_integers(struct lightningd *ld,
+					       struct db *db,
+					       const struct migration_context *mc);
+
+static void migrate_payments_scids_as_integers(struct lightningd *ld,
+					       struct db *db,
+					       const struct migration_context *mc);
 
 /* Do not reorder or remove elements from this array, it is used to
  * migrate existing databases from a previous state, based on the
@@ -858,353 +867,90 @@ static struct migration dbmigrations[] = {
 
     /* Issue #4887: reset the payments.id sequence after the migration above. Since this is a SELECT statement that would otherwise fail, make it an INSERT into the `vars` table.*/
     {SQL("/*PSQL*/INSERT INTO vars (name, intval) VALUES ('payment_id_reset', setval(pg_get_serial_sequence('payments', 'id'), COALESCE((SELECT MAX(id)+1 FROM payments), 1)))"), NULL},
+
+    /* Issue #4901: Partial index speeds up startup on nodes with ~1000 channels.  */
+    {&SQL("CREATE INDEX channel_htlcs_speedup_unresolved_idx"
+	 "    ON channel_htlcs(channel_id, direction)"
+	 " WHERE hstate NOT IN (9, 19);")
+	[BUILD_ASSERT_OR_ZERO( 9 == RCVD_REMOVE_ACK_REVOCATION) +
+	 BUILD_ASSERT_OR_ZERO(19 == SENT_REMOVE_ACK_REVOCATION)],
+     NULL},
+    {SQL("ALTER TABLE channel_htlcs ADD fees_msat BIGINT DEFAULT 0"), NULL},
+    {SQL("ALTER TABLE channel_funding_inflights ADD lease_fee BIGINT DEFAULT 0"), NULL},
+    /* Default is too big; we set to max after loading */
+    {SQL("ALTER TABLE channels ADD htlc_maximum_msat BIGINT DEFAULT 2100000000000000"), NULL},
+    {SQL("ALTER TABLE channels ADD htlc_minimum_msat BIGINT DEFAULT 0"), NULL},
+    {SQL("ALTER TABLE forwarded_payments ADD forward_style INTEGER DEFAULT NULL"), NULL},
+    /* "description" is used for label, so we use "paydescription" here */
+    {SQL("ALTER TABLE payments ADD paydescription TEXT;"), NULL},
+    /* Alias we sent to the remote side, for zeroconf and
+     * option_scid_alias, can be a list of short_channel_ids if
+     * required, but keeping it a single SCID for now. */
+    {SQL("ALTER TABLE channels ADD alias_local BIGINT DEFAULT NULL"), NULL},
+    /* Alias we received from the peer, and which we should be using
+     * in routehints in invoices. The peer will remember all the
+     * aliases, but we only ever need one. */
+    {SQL("ALTER TABLE channels ADD alias_remote BIGINT DEFAULT NULL"), NULL},
+    /* Cheeky immediate completion as best effort approximation of real completion time */
+    {SQL("ALTER TABLE payments ADD completed_at INTEGER DEFAULT NULL;"), NULL},
+    {SQL("UPDATE payments SET completed_at = timestamp WHERE status != 0;"), NULL},
+    {SQL("CREATE INDEX payments_idx ON payments (payment_hash)"), NULL},
+    /* forwards table outlives the channels, so we move there from old forwarded_payments table;
+     * but here the ids are the HTLC numbers, not the internal db ids. */
+    {SQL("CREATE TABLE forwards ("
+	 "in_channel_scid BIGINT"
+	 ", in_htlc_id BIGINT"
+	 ", out_channel_scid BIGINT"
+	 ", out_htlc_id BIGINT"
+	 ", in_msatoshi BIGINT"
+	 ", out_msatoshi BIGINT"
+	 ", state INTEGER"
+	 ", received_time BIGINT"
+	 ", resolved_time BIGINT"
+	 ", failcode INTEGER"
+	 ", forward_style INTEGER"
+	 ", PRIMARY KEY(in_channel_scid, in_htlc_id))"), NULL},
+    {SQL("INSERT INTO forwards SELECT"
+	 " in_channel_scid"
+	 ", COALESCE("
+	 "    (SELECT channel_htlc_id FROM channel_htlcs WHERE id = forwarded_payments.in_htlc_id),"
+	 "    -_ROWID_"
+	 "  )"
+	 ", out_channel_scid"
+	 ", (SELECT channel_htlc_id FROM channel_htlcs WHERE id = forwarded_payments.out_htlc_id)"
+	 ", in_msatoshi"
+	 ", out_msatoshi"
+	 ", state"
+	 ", received_time"
+	 ", resolved_time"
+	 ", failcode"
+	 ", forward_style"
+	 " FROM forwarded_payments"), NULL},
+    {SQL("DROP INDEX forwarded_payments_state;"), NULL},
+    {SQL("DROP INDEX forwarded_payments_out_htlc_id;"), NULL},
+    {SQL("DROP TABLE forwarded_payments;"), NULL},
+    /* Adds scid column, then moves short_channel_id across to it */
+    {SQL("ALTER TABLE channels ADD scid BIGINT;"), migrate_channels_scids_as_integers},
+    {SQL("ALTER TABLE payments ADD failscid BIGINT;"), migrate_payments_scids_as_integers},
+    {SQL("ALTER TABLE outputs ADD is_in_coinbase INTEGER DEFAULT 0;"), NULL},
+    {SQL("CREATE TABLE invoicerequests ("
+	 "  invreq_id BLOB"
+	 ", bolt12 TEXT"
+	 ", label TEXT"
+	 ", status INTEGER"
+	 ", PRIMARY KEY (invreq_id)"
+	 ");"), NULL},
+    /* A reference into our own invoicerequests table, if it was made from one */
+    {SQL("ALTER TABLE payments ADD COLUMN local_invreq_id BLOB DEFAULT NULL REFERENCES invoicerequests(invreq_id);"), NULL},
+    /* FIXME: Remove payments local_offer_id column! */
 };
 
-/* Leak tracking. */
-#if DEVELOPER
-static void db_assert_no_outstanding_statements(struct db *db)
+/* Released versions are of form v{num}[.{num}]* */
+static bool is_released_version(void)
 {
-	struct db_stmt *stmt;
-
-	stmt = list_top(&db->pending_statements, struct db_stmt, list);
-	if (stmt)
-		db_fatal("Unfinalized statement %s", stmt->location);
-}
-#else
-static void db_assert_no_outstanding_statements(struct db *db)
-{
-}
-#endif
-
-static void db_stmt_free(struct db_stmt *stmt)
-{
-	if (!stmt->executed)
-		fatal("Freeing an un-executed statement from %s: %s",
-		      stmt->location, stmt->query->query);
-	if (stmt->inner_stmt)
-		stmt->db->config->stmt_free_fn(stmt);
-	assert(stmt->inner_stmt == NULL);
-}
-
-struct db_stmt *db_prepare_v2_(const char *location, struct db *db,
-				     const char *query_id)
-{
-	struct db_stmt *stmt = tal(db, struct db_stmt);
-	size_t num_slots;
-	stmt->query = NULL;
-
-	/* Normalize query_id paths, because unit tests are compiled with this
-	 * prefix. */
-	if (strncmp(query_id, "./", 2) == 0)
-		query_id += 2;
-
-	if (!db->in_transaction)
-		db_fatal("Attempting to prepare a db_stmt outside of a "
-			 "transaction: %s", location);
-
-	/* Look up the query by its ID */
-	for (size_t i = 0; i < db->config->num_queries; i++) {
-		if (streq(query_id, db->config->queries[i].name)) {
-			stmt->query = &db->config->queries[i];
-			break;
-		}
-	}
-	if (stmt->query == NULL)
-		fatal("Could not resolve query %s", query_id);
-
-	num_slots = stmt->query->placeholders;
-	/* Allocate the slots for placeholders/bindings, zeroed next since
-	 * that sets the type to DB_BINDING_UNINITIALIZED for later checks. */
-	stmt->bindings = tal_arr(stmt, struct db_binding, num_slots);
-	for (size_t i=0; i<num_slots; i++)
-		stmt->bindings[i].type = DB_BINDING_UNINITIALIZED;
-
-	stmt->location = location;
-	stmt->error = NULL;
-	stmt->db = db;
-	stmt->executed = false;
-	stmt->inner_stmt = NULL;
-
-	tal_add_destructor(stmt, db_stmt_free);
-
-	list_add(&db->pending_statements, &stmt->list);
-
-	return stmt;
-}
-
-#define db_prepare_v2(db,query) \
-	db_prepare_v2_(__FILE__ ":" stringify(__LINE__), db, query)
-
-bool db_step(struct db_stmt *stmt)
-{
-	assert(stmt->executed);
-	return stmt->db->config->step_fn(stmt);
-}
-
-u64 db_column_u64(struct db_stmt *stmt, int col)
-{
-	if (db_column_is_null(stmt, col)) {
-		log_broken(stmt->db->log, "Accessing a null column %d in query %s", col, stmt->query->query);
-		return 0;
-	}
-	return stmt->db->config->column_u64_fn(stmt, col);
-}
-
-int db_column_int_or_default(struct db_stmt *stmt, int col, int def)
-{
-	if (db_column_is_null(stmt, col))
-		return def;
-	else
-		return db_column_int(stmt, col);
-}
-
-int db_column_int(struct db_stmt *stmt, int col)
-{
-	if (db_column_is_null(stmt, col)) {
-		log_broken(stmt->db->log, "Accessing a null column %d in query %s", col, stmt->query->query);
-		return 0;
-	}
-	return stmt->db->config->column_int_fn(stmt, col);
-}
-
-size_t db_column_bytes(struct db_stmt *stmt, int col)
-{
-	if (db_column_is_null(stmt, col)) {
-		log_broken(stmt->db->log, "Accessing a null column %d in query %s", col, stmt->query->query);
-		return 0;
-	}
-	return stmt->db->config->column_bytes_fn(stmt, col);
-}
-
-int db_column_is_null(struct db_stmt *stmt, int col)
-{
-	return stmt->db->config->column_is_null_fn(stmt, col);
-}
-
-const void *db_column_blob(struct db_stmt *stmt, int col)
-{
-	if (db_column_is_null(stmt, col)) {
-		log_broken(stmt->db->log, "Accessing a null column %d in query %s", col, stmt->query->query);
-		return NULL;
-	}
-	return stmt->db->config->column_blob_fn(stmt, col);
-}
-
-const unsigned char *db_column_text(struct db_stmt *stmt, int col)
-{
-	if (db_column_is_null(stmt, col)) {
-		log_broken(stmt->db->log, "Accessing a null column %d in query %s", col, stmt->query->query);
-		return NULL;
-	}
-	return stmt->db->config->column_text_fn(stmt, col);
-}
-
-size_t db_count_changes(struct db_stmt *stmt)
-{
-	assert(stmt->executed);
-	return stmt->db->config->count_changes_fn(stmt);
-}
-
-u64 db_last_insert_id_v2(struct db_stmt *stmt TAKES)
-{
-	u64 id;
-	assert(stmt->executed);
-	id = stmt->db->config->last_insert_id_fn(stmt);
-
-	if (taken(stmt))
-		tal_free(stmt);
-
-	return id;
-}
-
-static void destroy_db(struct db *db)
-{
-	db_assert_no_outstanding_statements(db);
-
-	if (db->config->teardown_fn)
-		db->config->teardown_fn(db);
-}
-
-/* We expect min changes (ie. BEGIN TRANSACTION): report if more.
- * Optionally add "final" at the end (ie. COMMIT). */
-static void db_report_changes(struct db *db, const char *final, size_t min)
-{
-	assert(db->changes);
-	assert(tal_count(db->changes) >= min);
-
-	/* Having changes implies that we have a dirty TX. The opposite is
-	 * currently not true, e.g., the postgres driver doesn't record
-	 * changes yet. */
-	assert(!tal_count(db->changes) || db->dirty);
-
-	if (tal_count(db->changes) > min)
-		plugin_hook_db_sync(db);
-	db->changes = tal_free(db->changes);
-}
-
-static void db_prepare_for_changes(struct db *db)
-{
-	assert(!db->changes);
-	db->changes = tal_arr(db, const char *, 0);
-}
-
-bool db_in_transaction(struct db *db)
-{
-	return db->in_transaction;
-}
-
-void db_begin_transaction_(struct db *db, const char *location)
-{
-	bool ok;
-	if (db->in_transaction)
-		db_fatal("Already in transaction from %s", db->in_transaction);
-
-	/* No writes yet. */
-	db->dirty = false;
-
-	db_prepare_for_changes(db);
-	ok = db->config->begin_tx_fn(db);
-	if (!ok)
-		db_fatal("Failed to start DB transaction: %s", db->error);
-
-	db->in_transaction = location;
-}
-
-/* By making the update conditional on the current value we expect we
- * are implementing an optimistic lock: if the update results in
- * changes on the DB we know that the data_version did not change
- * under our feet and no other transaction ran in the meantime.
- *
- * Notice that this update effectively locks the row, so that other
- * operations attempting to change this outside the transaction will
- * wait for this transaction to complete. The external change will
- * ultimately fail the changes test below, it'll just delay its abort
- * until our transaction is committed.
- */
-static void db_data_version_incr(struct db *db)
-{
-       struct db_stmt *stmt = db_prepare_v2(
-	       db, SQL("UPDATE vars "
-		       "SET intval = intval + 1 "
-		       "WHERE name = 'data_version'"
-		       " AND intval = ?"));
-       db_bind_int(stmt, 0, db->data_version);
-       db_exec_prepared_v2(stmt);
-       if (db_count_changes(stmt) != 1)
-	       fatal("Optimistic lock on the database failed. There may be a "
-                     "concurrent access to the database. Aborting since "
-                     "concurrent access is unsafe.");
-       tal_free(stmt);
-       db->data_version++;
-}
-
-void db_commit_transaction(struct db *db)
-{
-	bool ok;
-	assert(db->in_transaction);
-	db_assert_no_outstanding_statements(db);
-
-	/* Increment before reporting changes to an eventual plugin. */
-	if (db->dirty)
-		db_data_version_incr(db);
-
-	db_report_changes(db, NULL, 0);
-	ok = db->config->commit_tx_fn(db);
-
-	if (!ok)
-		db_fatal("Failed to commit DB transaction: %s", db->error);
-
-	db->in_transaction = NULL;
-	db->dirty = false;
-}
-
-static struct db_config *db_config_find(const char *dsn)
-{
-	size_t num_configs;
-	struct db_config **configs = autodata_get(db_backends, &num_configs);
-	const char *sep, *driver_name;
-	sep = strstr(dsn, "://");
-
-	if (!sep)
-		db_fatal("%s doesn't look like a valid data-source name (missing \"://\" separator.", dsn);
-
-	driver_name = tal_strndup(tmpctx, dsn, sep - dsn);
-
-	for (size_t i=0; i<num_configs; i++) {
-		if (streq(driver_name, configs[i]->name)) {
-			tal_free(driver_name);
-			return configs[i];
-		}
-	}
-
-	tal_free(driver_name);
-	return NULL;
-}
-
-/**
- * db_open - Open or create a sqlite3 database
- */
-static struct db *db_open(const tal_t *ctx, char *filename)
-{
-	struct db *db;
-
-	db = tal(ctx, struct db);
-	db->filename = tal_strdup(db, filename);
-	list_head_init(&db->pending_statements);
-	if (!strstr(db->filename, "://"))
-		db_fatal("Could not extract driver name from \"%s\"", db->filename);
-
-	db->config = db_config_find(db->filename);
-	if (!db->config)
-		db_fatal("Unable to find DB driver for %s", db->filename);
-
-	tal_add_destructor(db, destroy_db);
-	db->in_transaction = NULL;
-	db->changes = NULL;
-
-	/* This must be outside a transaction, so catch it */
-	assert(!db->in_transaction);
-
-	db_prepare_for_changes(db);
-	if (db->config->setup_fn && !db->config->setup_fn(db))
-		fatal("Error calling DB setup: %s", db->error);
-	db_report_changes(db, NULL, 0);
-
-	return db;
-}
-
-/**
- * db_get_version - Determine the current DB schema version
- *
- * Will attempt to determine the current schema version of the
- * database @db by querying the `version` table. If the table does not
- * exist it'll return schema version -1, so that migration 0 is
- * applied, which should create the `version` table.
- */
-static int db_get_version(struct db *db)
-{
-	int res = -1;
-	struct db_stmt *stmt = db_prepare_v2(db, SQL("SELECT version FROM version LIMIT 1"));
-
-	/*
-	 * Tentatively execute a query, but allow failures. Some databases
-	 * like postgres will terminate the DB transaction if there is an
-	 * error during the execution of a query, e.g., trying to access a
-	 * table that doesn't exist yet, so we need to terminate and restart
-	 * the DB transaction.
-	 */
-	if (!db_query_prepared(stmt)) {
-		db_commit_transaction(stmt->db);
-		db_begin_transaction(stmt->db);
-		tal_free(stmt);
-		return res;
-	}
-
-	if (db_step(stmt))
-		res = db_column_int(stmt, 0);
-
-	tal_free(stmt);
-	return res;
+	if (version()[0] != 'v')
+		return false;
+	return strcspn(version()+1, ".0123456789") == strlen(version()+1);
 }
 
 /**
@@ -1225,19 +971,26 @@ static bool db_migrate(struct lightningd *ld, struct db *db,
 	available = ARRAY_SIZE(dbmigrations) - 1;
 
 	if (current == -1)
-		log_info(db->log, "Creating database");
+		log_info(ld->log, "Creating database");
 	else if (available < current)
 		db_fatal("Refusing to migrate down from version %u to %u",
 			 current, available);
-	else if (current != available)
-		log_info(db->log, "Updating database from version %u to %u",
+	else if (current != available) {
+		if (ld->db_upgrade_ok && *ld->db_upgrade_ok == false) {
+			db_fatal("Refusing to upgrade db from version %u to %u (database-upgrade=false)",
+				 current, available);
+		} else if (!ld->db_upgrade_ok && !is_released_version()) {
+			db_fatal("Refusing to irreversibly upgrade db from version %u to %u in non-final version %s (use --database-upgrade=true to override)",
+				 current, available, version());
+		}
+		log_info(ld->log, "Updating database from version %u to %u",
 			 current, available);
+	}
 
 	while (current < available) {
 		current++;
 		if (dbmigrations[current].sql) {
-			struct db_stmt *stmt =
-			    db_prepare_v2(db, dbmigrations[current].sql);
+			stmt = db_prepare_v2(db, dbmigrations[current].sql);
 			db_exec_prepared_v2(stmt);
 			tal_free(stmt);
 		}
@@ -1264,30 +1017,19 @@ static bool db_migrate(struct lightningd *ld, struct db *db,
 	return current != orig;
 }
 
-u32 db_data_version_get(struct db *db)
-{
-	struct db_stmt *stmt;
-	u32 version;
-	stmt = db_prepare_v2(db, SQL("SELECT intval FROM vars WHERE name = 'data_version'"));
-	db_query_prepared(stmt);
-	db_step(stmt);
-	version = db_column_int(stmt, 0);
-	tal_free(stmt);
-	return version;
-}
-
 struct db *db_setup(const tal_t *ctx, struct lightningd *ld,
 		    const struct ext_key *bip32_base)
 {
 	struct db *db = db_open(ctx, ld->wallet_dsn);
 	bool migrated;
-	db->log = new_log(db, ld->log_book, NULL, "database");
+
+	db->report_changes_fn = plugin_hook_db_sync;
 
 	db_begin_transaction(db);
+	db->data_version = db_data_version_get(db);
 
 	migrated = db_migrate(ld, db, bip32_base);
 
-	db->data_version = db_data_version_get(db);
 	db_commit_transaction(db);
 
 	/* This needs to be done outside a transaction, apparently.
@@ -1297,44 +1039,6 @@ struct db *db_setup(const tal_t *ctx, struct lightningd *ld,
 		db_fatal("Error vacuuming db: %s", db->error);
 
 	return db;
-}
-
-s64 db_get_intvar(struct db *db, char *varname, s64 defval)
-{
-	s64 res = defval;
-	struct db_stmt *stmt = db_prepare_v2(
-	    db, SQL("SELECT intval FROM vars WHERE name= ? LIMIT 1"));
-	db_bind_text(stmt, 0, varname);
-	if (!db_query_prepared(stmt))
-		goto done;
-
-	if (db_step(stmt))
-		res = db_column_int(stmt, 0);
-
-done:
-	tal_free(stmt);
-	return res;
-}
-
-void db_set_intvar(struct db *db, char *varname, s64 val)
-{
-	size_t changes;
-	struct db_stmt *stmt = db_prepare_v2(db, SQL("UPDATE vars SET intval=? WHERE name=?;"));
-	db_bind_int(stmt, 0, val);
-	db_bind_text(stmt, 1, varname);
-	if (!db_exec_prepared_v2(stmt))
-		db_fatal("Error executing update: %s", stmt->error);
-	changes = db_count_changes(stmt);
-	tal_free(stmt);
-
-	if (changes == 0) {
-		stmt = db_prepare_v2(db, SQL("INSERT INTO vars (name, intval) VALUES (?, ?);"));
-		db_bind_text(stmt, 0, varname);
-		db_bind_int(stmt, 1, val);
-		if (!db_exec_prepared_v2(stmt))
-			db_fatal("Error executing insert: %s", stmt->error);
-		tal_free(stmt);
-	}
 }
 
 /* Will apply the current config fee settings to all channels */
@@ -1399,23 +1103,23 @@ void fillin_missing_scriptpubkeys(struct lightningd *ld, struct db *db,
 		struct pubkey key;
 		struct db_stmt *update_stmt;
 
-		type = db_column_int(stmt, 0);
-		keyindex = db_column_int(stmt, 1);
-		db_column_txid(stmt, 2, &txid);
-		outnum = db_column_int(stmt, 3);
+		type = db_col_int(stmt, "type");
+		keyindex = db_col_int(stmt, "keyindex");
+		db_col_txid(stmt, "prev_out_tx", &txid);
+		outnum = db_col_int(stmt, "prev_out_index");
 
 		/* This indiciates whether or not we have 'close_info' */
-		if (!db_column_is_null(stmt, 4)) {
+		if (!db_col_is_null(stmt, "channel_id")) {
 			struct pubkey *commitment_point;
 			struct node_id peer_id;
 			u64 channel_id;
 			u8 *msg;
 
-			channel_id = db_column_u64(stmt, 4);
-			db_column_node_id(stmt, 5, &peer_id);
-			if (!db_column_is_null(stmt, 6)) {
+			channel_id = db_col_u64(stmt, "channel_id");
+			db_col_node_id(stmt, "peer_id", &peer_id);
+			if (!db_col_is_null(stmt, "commitment_point")) {
 				commitment_point = tal(stmt, struct pubkey);
-				db_column_pubkey(stmt, 6, commitment_point);
+				db_col_pubkey(stmt, "commitment_point", commitment_point);
 			} else
 				commitment_point = NULL;
 
@@ -1432,6 +1136,8 @@ void fillin_missing_scriptpubkeys(struct lightningd *ld, struct db *db,
 				fatal("HSM gave bad hsm_get_output_scriptpubkey_reply %s",
 				      tal_hex(msg, msg));
 		} else {
+			db_col_ignore(stmt, "peer_id");
+			db_col_ignore(stmt, "commitment_point");
 			/* Build from bip32_base */
 			bip32_pubkey(mc->bip32_base, &key, keyindex);
 			if (type == p2sh_wpkh) {
@@ -1479,9 +1185,9 @@ static void fillin_missing_channel_id(struct lightningd *ld, struct db *db,
 		struct bitcoin_outpoint funding;
 		struct channel_id cid;
 
-		id = db_column_u64(stmt, 0);
-		db_column_txid(stmt, 1, &funding.txid);
-		funding.n = db_column_int(stmt, 2);
+		id = db_col_u64(stmt, "id");
+		db_col_txid(stmt, "funding_tx_id", &funding.txid);
+		funding.n = db_col_int(stmt, "funding_tx_outnum");
 		derive_channel_id(&cid, &funding);
 
 		update_stmt = db_prepare_v2(db, SQL("UPDATE channels"
@@ -1522,8 +1228,8 @@ static void fillin_missing_local_basepoints(struct lightningd *ld,
 		struct basepoints base;
 		struct pubkey funding_pubkey;
 
-		dbid = db_column_u64(stmt, 0);
-		db_column_node_id(stmt, 1, &peer_id);
+		dbid = db_col_u64(stmt, "channels.id");
+		db_col_node_id(stmt, "peers.node_id", &peer_id);
 
 		if (!wire_sync_write(mc->hsm_fd,
 				     towire_hsmd_get_channel_basepoints(
@@ -1619,19 +1325,26 @@ migrate_inflight_last_tx_to_psbt(struct lightningd *ld, struct db *db,
 		u64 cdb_id;
 		u8 *funding_wscript;
 
-		cdb_id = db_column_u64(stmt, 0);
-		last_tx = db_column_tx(stmt, stmt, 3);
+		cdb_id = db_col_u64(stmt, "c.id");
+		last_tx = db_col_tx(stmt, stmt, "inflight.last_tx");
 		assert(last_tx != NULL);
+
+		/* FIXME: This is only needed inside the select? */
+		db_col_ignore(stmt, "inflight.last_tx");
 
 		/* If we've forgotten about the peer_id
 		 * because we closed / forgot the channel,
 		 * we can skip this. */
-		if (db_column_is_null(stmt, 1))
+		if (db_col_is_null(stmt, "p.node_id")) {
+			db_col_ignore(stmt, "inflight.last_sig");
+			db_col_ignore(stmt, "inflight.funding_satoshi");
+			db_col_ignore(stmt, "inflight.funding_tx_id");
 			continue;
-		db_column_node_id(stmt, 1, &peer_id);
-		db_column_amount_sat(stmt, 5, &funding_sat);
-		db_column_pubkey(stmt, 2, &remote_funding_pubkey);
-		db_column_txid(stmt, 6, &funding_txid);
+		}
+		db_col_node_id(stmt, "p.node_id", &peer_id);
+		db_col_amount_sat(stmt, "inflight.funding_satoshi", &funding_sat);
+		db_col_pubkey(stmt, "c.fundingkey_remote", &remote_funding_pubkey);
+		db_col_txid(stmt, "inflight.funding_tx_id", &funding_txid);
 
 		get_channel_basepoints(ld, &peer_id, cdb_id,
 				       &local_basepoints, &local_funding_pubkey);
@@ -1645,7 +1358,7 @@ migrate_inflight_last_tx_to_psbt(struct lightningd *ld, struct db *db,
 					funding_sat);
 		psbt_input_set_witscript(last_tx->psbt, 0, funding_wscript);
 
-		if (!db_column_signature(stmt, 4, &last_sig.s))
+		if (!db_col_signature(stmt, "inflight.last_sig", &last_sig.s))
 			abort();
 
 		last_sig.sighash_type = SIGHASH_ALL;
@@ -1704,18 +1417,23 @@ void migrate_last_tx_to_psbt(struct lightningd *ld, struct db *db,
 		u64 cdb_id;
 		u8 *funding_wscript;
 
-		cdb_id = db_column_u64(stmt, 0);
-		last_tx = db_column_tx(stmt, stmt, 2);
+		cdb_id = db_col_u64(stmt, "c.id");
+		last_tx = db_col_tx(stmt, stmt, "c.last_tx");
 		assert(last_tx != NULL);
 
 		/* If we've forgotten about the peer_id
 		 * because we closed / forgot the channel,
 		 * we can skip this. */
-		if (db_column_is_null(stmt, 1))
+		if (db_col_is_null(stmt, "p.node_id")) {
+			db_col_ignore(stmt, "c.funding_satoshi");
+			db_col_ignore(stmt, "c.fundingkey_remote");
+			db_col_ignore(stmt, "c.last_sig");
 			continue;
-		db_column_node_id(stmt, 1, &peer_id);
-		db_column_amount_sat(stmt, 3, &funding_sat);
-		db_column_pubkey(stmt, 4, &remote_funding_pubkey);
+		}
+
+		db_col_node_id(stmt, "p.node_id", &peer_id);
+		db_col_amount_sat(stmt, "c.funding_satoshi", &funding_sat);
+		db_col_pubkey(stmt, "c.fundingkey_remote", &remote_funding_pubkey);
 
 		get_channel_basepoints(ld, &peer_id, cdb_id,
 				       &local_basepoints, &local_funding_pubkey);
@@ -1737,7 +1455,7 @@ void migrate_last_tx_to_psbt(struct lightningd *ld, struct db *db,
 		}
 
 
-		if (!db_column_signature(stmt, 5, &last_sig.s))
+		if (!db_col_signature(stmt, "c.last_sig", &last_sig.s))
 			abort();
 
 		last_sig.sighash_type = SIGHASH_ALL;
@@ -1761,466 +1479,98 @@ void migrate_last_tx_to_psbt(struct lightningd *ld, struct db *db,
 	tal_free(stmt);
 }
 
-void db_bind_null(struct db_stmt *stmt, int pos)
+/* We used to store scids as strings... */
+static void migrate_channels_scids_as_integers(struct lightningd *ld,
+					       struct db *db,
+					       const struct migration_context *mc)
 {
-	assert(pos < tal_count(stmt->bindings));
-	stmt->bindings[pos].type = DB_BINDING_NULL;
-}
+	struct db_stmt *stmt;
+	char **scids = tal_arr(tmpctx, char *, 0);
+	size_t changes;
 
-void db_bind_int(struct db_stmt *stmt, int pos, int val)
-{
-	assert(pos < tal_count(stmt->bindings));
-	memcheck(&val, sizeof(val));
-	stmt->bindings[pos].type = DB_BINDING_INT;
-	stmt->bindings[pos].v.i = val;
-}
-
-void db_bind_u64(struct db_stmt *stmt, int pos, u64 val)
-{
-	memcheck(&val, sizeof(val));
-	assert(pos < tal_count(stmt->bindings));
-	stmt->bindings[pos].type = DB_BINDING_UINT64;
-	stmt->bindings[pos].v.u64 = val;
-}
-
-void db_bind_blob(struct db_stmt *stmt, int pos, const u8 *val, size_t len)
-{
-	assert(pos < tal_count(stmt->bindings));
-	stmt->bindings[pos].type = DB_BINDING_BLOB;
-	stmt->bindings[pos].v.blob = memcheck(val, len);
-	stmt->bindings[pos].len = len;
-}
-
-void db_bind_text(struct db_stmt *stmt, int pos, const char *val)
-{
-	assert(pos < tal_count(stmt->bindings));
-	stmt->bindings[pos].type = DB_BINDING_TEXT;
-	stmt->bindings[pos].v.text = val;
-	stmt->bindings[pos].len = strlen(val);
-}
-
-void db_bind_preimage(struct db_stmt *stmt, int pos, const struct preimage *p)
-{
-	db_bind_blob(stmt, pos, p->r, sizeof(struct preimage));
-}
-
-void db_bind_sha256(struct db_stmt *stmt, int pos, const struct sha256 *s)
-{
-	db_bind_blob(stmt, pos, s->u.u8, sizeof(struct sha256));
-}
-
-void db_bind_sha256d(struct db_stmt *stmt, int pos, const struct sha256_double *s)
-{
-	db_bind_sha256(stmt, pos, &s->sha);
-}
-
-void db_bind_secret(struct db_stmt *stmt, int pos, const struct secret *s)
-{
-	assert(sizeof(s->data) == 32);
-	db_bind_blob(stmt, pos, s->data, sizeof(s->data));
-}
-
-void db_bind_secret_arr(struct db_stmt *stmt, int col, const struct secret *s)
-{
-	size_t num = tal_count(s), elsize = sizeof(s->data);
-	u8 *ser = tal_arr(stmt, u8, num * elsize);
-
-	for (size_t i = 0; i < num; ++i)
-		memcpy(ser + i * elsize, &s[i], elsize);
-
-	db_bind_blob(stmt, col, ser, tal_count(ser));
-}
-
-void db_bind_txid(struct db_stmt *stmt, int pos, const struct bitcoin_txid *t)
-{
-	db_bind_sha256d(stmt, pos, &t->shad);
-}
-
-void db_bind_channel_id(struct db_stmt *stmt, int pos, const struct channel_id *id)
-{
-	db_bind_blob(stmt, pos, id->id, sizeof(id->id));
-}
-
-void db_bind_node_id(struct db_stmt *stmt, int pos, const struct node_id *id)
-{
-	db_bind_blob(stmt, pos, id->k, sizeof(id->k));
-}
-
-void db_bind_node_id_arr(struct db_stmt *stmt, int col,
-			 const struct node_id *ids)
-{
-	/* Copy into contiguous array: ARM will add padding to struct node_id! */
-	size_t n = tal_count(ids);
-	u8 *arr = tal_arr(stmt, u8, n * sizeof(ids[0].k));
-
-	for (size_t i = 0; i < n; ++i) {
-		assert(node_id_valid(&ids[i]));
-		memcpy(arr + sizeof(ids[i].k) * i,
-		       ids[i].k,
-		       sizeof(ids[i].k));
+	stmt = db_prepare_v2(db, SQL("SELECT short_channel_id FROM channels"));
+	db_query_prepared(stmt);
+	while (db_step(stmt)) {
+		if (db_col_is_null(stmt, "short_channel_id"))
+			continue;
+		tal_arr_expand(&scids,
+			       db_col_strdup(scids, stmt, "short_channel_id"));
 	}
-	db_bind_blob(stmt, col, arr, tal_count(arr));
-}
+	tal_free(stmt);
 
-void db_bind_pubkey(struct db_stmt *stmt, int pos, const struct pubkey *pk)
-{
-	u8 *der = tal_arr(stmt, u8, PUBKEY_CMPR_LEN);
-	pubkey_to_der(der, pk);
-	db_bind_blob(stmt, pos, der, PUBKEY_CMPR_LEN);
-}
-
-void db_bind_short_channel_id(struct db_stmt *stmt, int col,
-			      const struct short_channel_id *id)
-{
-	char *ser = short_channel_id_to_str(stmt, id);
-	db_bind_text(stmt, col, ser);
-}
-
-void db_bind_short_channel_id_arr(struct db_stmt *stmt, int col,
-				  const struct short_channel_id *id)
-{
-	u8 *ser = tal_arr(stmt, u8, 0);
-	size_t num = tal_count(id);
-
-	for (size_t i = 0; i < num; ++i)
-		towire_short_channel_id(&ser, &id[i]);
-
-	db_bind_talarr(stmt, col, ser);
-}
-
-void db_bind_signature(struct db_stmt *stmt, int col,
-		       const secp256k1_ecdsa_signature *sig)
-{
-	u8 *buf = tal_arr(stmt, u8, 64);
-	int ret = secp256k1_ecdsa_signature_serialize_compact(secp256k1_ctx,
-							      buf, sig);
-	assert(ret == 1);
-	db_bind_blob(stmt, col, buf, 64);
-}
-
-void db_bind_timeabs(struct db_stmt *stmt, int col, struct timeabs t)
-{
-	u64 timestamp =  t.ts.tv_nsec + (((u64) t.ts.tv_sec) * ((u64) NSEC_IN_SEC));
-	db_bind_u64(stmt, col, timestamp);
-}
-
-void db_bind_tx(struct db_stmt *stmt, int col, const struct wally_tx *tx)
-{
-	u8 *ser = linearize_wtx(stmt, tx);
-	assert(ser);
-	db_bind_talarr(stmt, col, ser);
-}
-
-void db_bind_psbt(struct db_stmt *stmt, int col, const struct wally_psbt *psbt)
-{
-	size_t bytes_written;
-	const u8 *ser = psbt_get_bytes(stmt, psbt, &bytes_written);
-	assert(ser);
-	db_bind_blob(stmt, col, ser, bytes_written);
-}
-
-void db_bind_amount_msat(struct db_stmt *stmt, int pos,
-			 const struct amount_msat *msat)
-{
-	db_bind_u64(stmt, pos, msat->millisatoshis); /* Raw: low level function */
-}
-
-void db_bind_amount_sat(struct db_stmt *stmt, int pos,
-			 const struct amount_sat *sat)
-{
-	db_bind_u64(stmt, pos, sat->satoshis); /* Raw: low level function */
-}
-
-void db_bind_json_escape(struct db_stmt *stmt, int pos,
-			 const struct json_escape *esc)
-{
-	db_bind_text(stmt, pos, esc->s);
-}
-
-void db_bind_onionreply(struct db_stmt *stmt, int pos, const struct onionreply *r)
-{
-	db_bind_talarr(stmt, pos, r->contents);
-}
-
-void db_bind_talarr(struct db_stmt *stmt, int col, const u8 *arr)
-{
-	if (!arr)
-		db_bind_null(stmt, col);
-	else
-		db_bind_blob(stmt, col, arr, tal_bytelen(arr));
-}
-
-void db_column_preimage(struct db_stmt *stmt, int col,
-			struct preimage *preimage)
-{
-	const u8 *raw;
-	size_t size = sizeof(struct preimage);
-	assert(db_column_bytes(stmt, col) == size);
-	raw = db_column_blob(stmt, col);
-	memcpy(preimage, raw, size);
-}
-
-void db_column_channel_id(struct db_stmt *stmt, int col, struct channel_id *dest)
-{
-	assert(db_column_bytes(stmt, col) == sizeof(dest->id));
-	memcpy(dest->id, db_column_blob(stmt, col), sizeof(dest->id));
-}
-
-void db_column_node_id(struct db_stmt *stmt, int col, struct node_id *dest)
-{
-	assert(db_column_bytes(stmt, col) == sizeof(dest->k));
-	memcpy(dest->k, db_column_blob(stmt, col), sizeof(dest->k));
-}
-
-struct node_id *db_column_node_id_arr(const tal_t *ctx, struct db_stmt *stmt,
-				      int col)
-{
-	struct node_id *ret;
-	size_t n = db_column_bytes(stmt, col) / sizeof(ret->k);
-	const u8 *arr = db_column_blob(stmt, col);
-	assert(n * sizeof(ret->k) == (size_t)db_column_bytes(stmt, col));
-	ret = tal_arr(ctx, struct node_id, n);
-
-	for (size_t i = 0; i < n; i++)
-		memcpy(ret[i].k, arr + i * sizeof(ret[i].k), sizeof(ret[i].k));
-
-	return ret;
-}
-
-void db_column_pubkey(struct db_stmt *stmt, int pos, struct pubkey *dest)
-{
-	bool ok;
-	assert(db_column_bytes(stmt, pos) == PUBKEY_CMPR_LEN);
-	ok = pubkey_from_der(db_column_blob(stmt, pos), PUBKEY_CMPR_LEN, dest);
-	assert(ok);
-}
-
-bool db_column_short_channel_id(struct db_stmt *stmt, int col,
-				struct short_channel_id *dest)
-{
-	const char *source = db_column_blob(stmt, col);
-	size_t sourcelen = db_column_bytes(stmt, col);
-	return short_channel_id_from_str(source, sourcelen, dest);
-}
-
-struct short_channel_id *
-db_column_short_channel_id_arr(const tal_t *ctx, struct db_stmt *stmt, int col)
-{
-	const u8 *ser;
-	size_t len;
-	struct short_channel_id *ret;
-
-	ser = db_column_blob(stmt, col);
-	len = db_column_bytes(stmt, col);
-	ret = tal_arr(ctx, struct short_channel_id, 0);
-
-	while (len != 0) {
+	changes = 0;
+	for (size_t i = 0; i < tal_count(scids); i++) {
 		struct short_channel_id scid;
-		fromwire_short_channel_id(&ser, &len, &scid);
-		tal_arr_expand(&ret, scid);
+		if (!short_channel_id_from_str(scids[i], strlen(scids[i]), &scid))
+			db_fatal("Cannot convert invalid channels.short_channel_id '%s'",
+				 scids[i]);
+
+		stmt = db_prepare_v2(db, SQL("UPDATE channels"
+					     " SET scid = ?"
+					     " WHERE short_channel_id = ?"));
+		db_bind_scid(stmt, 0, &scid);
+		db_bind_text(stmt, 1, scids[i]);
+		db_exec_prepared_v2(stmt);
+
+		/* This was reported to happen with an (old, closed) channel: that we'd have
+		 * more than one change here!  That's weird, but just log about it. */
+		if (db_count_changes(stmt) != 1)
+			log_broken(ld->log,
+				   "migrate_channels_scids_as_integers: converting channels.short_channel_id '%s' gave %zu changes != 1!",
+				   scids[i], db_count_changes(stmt));
+		changes += db_count_changes(stmt);
+		tal_free(stmt);
 	}
 
-	return ret;
+	if (changes != tal_count(scids))
+		fatal("migrate_channels_scids_as_integers: only converted %zu of %zu scids!",
+		      changes, tal_count(scids));
+
+	/* FIXME: We cannot use ->delete_columns to remove
+	 * short_channel_id, as other tables reference the channels
+	 * (and sqlite3 has them referencing a now-deleted table!).
+	 * When we can assume sqlite3 2021-04-19 (3.35.5), we can
+	 * simply use DROP COLUMN (yay!) */
+
+	/* So null-out the unused column, at least! */
+	stmt = db_prepare_v2(db, SQL("UPDATE channels"
+				     " SET short_channel_id = NULL;"));
+	db_exec_prepared_v2(take(stmt));
 }
 
-bool db_column_signature(struct db_stmt *stmt, int col,
-			 secp256k1_ecdsa_signature *sig)
+static void migrate_payments_scids_as_integers(struct lightningd *ld,
+					       struct db *db,
+					       const struct migration_context *mc)
 {
-	assert(db_column_bytes(stmt, col) == 64);
-	return secp256k1_ecdsa_signature_parse_compact(
-		   secp256k1_ctx, sig, db_column_blob(stmt, col)) == 1;
-}
+	struct db_stmt *stmt;
+	const char *colnames[] = {"failchannel"};
 
-struct timeabs db_column_timeabs(struct db_stmt *stmt, int col)
-{
-	struct timeabs t;
-	u64 timestamp = db_column_u64(stmt, col);
-	t.ts.tv_sec = timestamp / NSEC_IN_SEC;
-	t.ts.tv_nsec = timestamp % NSEC_IN_SEC;
-	return t;
+	stmt = db_prepare_v2(db, SQL("SELECT id, failchannel FROM payments"));
+	db_query_prepared(stmt);
+	while (db_step(stmt)) {
+		struct db_stmt *update_stmt;
+		struct short_channel_id scid;
+		const char *str;
 
-}
+		if (db_col_is_null(stmt, "failchannel")) {
+			db_col_ignore(stmt, "id");
+			continue;
+		}
 
-struct bitcoin_tx *db_column_tx(const tal_t *ctx, struct db_stmt *stmt, int col)
-{
-	const u8 *src = db_column_blob(stmt, col);
-	size_t len = db_column_bytes(stmt, col);
-	return pull_bitcoin_tx(ctx, &src, &len);
-}
-
-struct wally_psbt *db_column_psbt(const tal_t *ctx, struct db_stmt *stmt, int col)
-{
-	const u8 *src = db_column_blob(stmt, col);
-	size_t len = db_column_bytes(stmt, col);
-	return psbt_from_bytes(ctx, src, len);
-}
-
-struct bitcoin_tx *db_column_psbt_to_tx(const tal_t *ctx, struct db_stmt *stmt, int col)
-{
-	struct wally_psbt *psbt = db_column_psbt(ctx, stmt, col);
-	if (!psbt)
-		return NULL;
-	return bitcoin_tx_with_psbt(ctx, psbt);
-}
-
-void *db_column_arr_(const tal_t *ctx, struct db_stmt *stmt, int col,
-			  size_t bytes, const char *label, const char *caller)
-{
-	size_t sourcelen;
-	void *p;
-
-	if (db_column_is_null(stmt, col))
-		return NULL;
-
-	sourcelen = db_column_bytes(stmt, col);
-
-	if (sourcelen % bytes != 0)
-		db_fatal("%s: column size %zu not a multiple of %s (%zu)",
-			 caller, sourcelen, label, bytes);
-
-	p = tal_arr_label(ctx, char, sourcelen, label);
-	memcpy(p, db_column_blob(stmt, col), sourcelen);
-	return p;
-}
-
-void db_column_amount_msat_or_default(struct db_stmt *stmt, int col,
-				      struct amount_msat *msat,
-				      struct amount_msat def)
-{
-	if (db_column_is_null(stmt, col))
-		*msat = def;
-	else
-		msat->millisatoshis = db_column_u64(stmt, col); /* Raw: low level function */
-}
-
-void db_column_amount_msat(struct db_stmt *stmt, int col,
-			   struct amount_msat *msat)
-{
-	msat->millisatoshis = db_column_u64(stmt, col); /* Raw: low level function */
-}
-
-void db_column_amount_sat(struct db_stmt *stmt, int col, struct amount_sat *sat)
-{
-	sat->satoshis = db_column_u64(stmt, col); /* Raw: low level function */
-}
-
-struct json_escape *db_column_json_escape(const tal_t *ctx,
-					  struct db_stmt *stmt, int col)
-{
-	return json_escape_string_(ctx, db_column_blob(stmt, col),
-				   db_column_bytes(stmt, col));
-}
-
-void db_column_sha256(struct db_stmt *stmt, int col, struct sha256 *sha)
-{
-	const u8 *raw;
-	size_t size = sizeof(struct sha256);
-	assert(db_column_bytes(stmt, col) == size);
-	raw = db_column_blob(stmt, col);
-	memcpy(sha, raw, size);
-}
-
-void db_column_sha256d(struct db_stmt *stmt, int col,
-		       struct sha256_double *shad)
-{
-	const u8 *raw;
-	size_t size = sizeof(struct sha256_double);
-	assert(db_column_bytes(stmt, col) == size);
-	raw = db_column_blob(stmt, col);
-	memcpy(shad, raw, size);
-}
-
-void db_column_secret(struct db_stmt *stmt, int col, struct secret *s)
-{
-	const u8 *raw;
-	assert(db_column_bytes(stmt, col) == sizeof(struct secret));
-	raw = db_column_blob(stmt, col);
-	memcpy(s, raw, sizeof(struct secret));
-}
-
-struct secret *db_column_secret_arr(const tal_t *ctx, struct db_stmt *stmt,
-				    int col)
-{
-	return db_column_arr(ctx, stmt, col, struct secret);
-}
-
-void db_column_txid(struct db_stmt *stmt, int pos, struct bitcoin_txid *t)
-{
-	db_column_sha256d(stmt, pos, &t->shad);
-}
-
-struct onionreply *db_column_onionreply(const tal_t *ctx,
-					struct db_stmt *stmt, int col)
-{
-	struct onionreply *r = tal(ctx, struct onionreply);
-	r->contents = tal_dup_arr(r, u8,
-				  db_column_blob(stmt, col),
-				  db_column_bytes(stmt, col), 0);
-	return r;
-}
-
-u8 *db_column_talarr(const tal_t *ctx, struct db_stmt *stmt, int col)
-{
-	if (db_column_is_null(stmt, col))
-		return NULL;
-	return tal_dup_arr(ctx, u8,
-			   db_column_blob(stmt, col),
-			   db_column_bytes(stmt, col), 0);
-}
-
-bool db_exec_prepared_v2(struct db_stmt *stmt TAKES)
-{
-	bool ret = stmt->db->config->exec_fn(stmt);
-
-	/* If this was a write we need to bump the data_version upon commit. */
-	stmt->db->dirty = stmt->db->dirty || !stmt->query->readonly;
-
-	stmt->executed = true;
-	list_del_from(&stmt->db->pending_statements, &stmt->list);
-
-	/* The driver itself doesn't call `fatal` since we want to override it
-	 * for testing. Instead we check here that the error message is set if
-	 * we report an error. */
-	if (!ret) {
-		assert(stmt->error);
-		db_fatal("Error executing statement: %s", stmt->error);
+		str = db_col_strdup(tmpctx, stmt, "failchannel");
+		if (!short_channel_id_from_str(str, strlen(str), &scid))
+			db_fatal("Cannot convert invalid payments.failchannel '%s'",
+				 str);
+		update_stmt = db_prepare_v2(db, SQL("UPDATE payments SET"
+						    " failscid = ?"
+						    " WHERE id = ?"));
+		db_bind_scid(update_stmt, 0, &scid);
+		db_bind_u64(update_stmt, 1, db_col_u64(stmt, "id"));
+		db_exec_prepared_v2(update_stmt);
+		tal_free(update_stmt);
 	}
+	tal_free(stmt);
 
-	if (taken(stmt))
-	    tal_free(stmt);
-
-	return ret;
-}
-
-bool db_query_prepared(struct db_stmt *stmt)
-{
-	/* Make sure we don't accidentally execute a modifying query using a
-	 * read-only path. */
-	bool ret;
-	assert(stmt->query->readonly);
-	ret = stmt->db->config->query_fn(stmt);
-	stmt->executed = true;
-	list_del_from(&stmt->db->pending_statements, &stmt->list);
-	return ret;
-}
-
-void db_changes_add(struct db_stmt *stmt, const char * expanded)
-{
-	struct db *db = stmt->db;
-
-	if (stmt->query->readonly) {
-		return;
-	}
-	/* We get a "COMMIT;" after we've sent our changes. */
-	if (!db->changes) {
-		assert(streq(expanded, "COMMIT;"));
-		return;
-	}
-
-	tal_arr_expand(&db->changes, tal_strdup(db->changes, expanded));
-}
-
-const char **db_changes(struct db *db)
-{
-	return db->changes;
+	if (!db->config->delete_columns(db, "payments", colnames, ARRAY_SIZE(colnames)))
+		db_fatal("Could not delete payments.failchannel");
 }

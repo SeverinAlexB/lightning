@@ -3,7 +3,8 @@ from .primitives import ShortChannelId, PublicKey
 from .invoice import Invoice
 from .onion import OnionPayload, TlvPayload, LegacyOnionPayload
 from .wire import LightningConnection, LightningServerSocket
-from .__version__ import __version__
+
+__version__ = "22.11rc1"
 
 __all__ = [
     "Invoice",

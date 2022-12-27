@@ -1,4 +1,4 @@
-lightning-getinfo -- Command to receive all information about the c-lightning node.
+lightning-getinfo -- Command to receive all information about the Core Lightning node.
 ============================================================
 
 SYNOPSIS
@@ -27,23 +27,30 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **id** (pubkey): The public key unique to this node
 - **alias** (string): The fun alias this node will advertize (up to 32 characters)
 - **color** (hex): The favorite RGB color this node will advertize (always 6 characters)
-- **num_peers** (u32): The total count of peers, connected or with channels
-- **num_pending_channels** (u32): The total count of channels being opened
-- **num_active_channels** (u32): The total count of channels in normal state
-- **num_inactive_channels** (u32): The total count of channels waiting for opening or closing transactions to be mined
+- **num\_peers** (u32): The total count of peers, connected or with channels
+- **num\_pending\_channels** (u32): The total count of channels being opened
+- **num\_active\_channels** (u32): The total count of channels in normal state
+- **num\_inactive\_channels** (u32): The total count of channels waiting for opening or closing transactions to be mined
 - **version** (string): Identifies what bugs you are running into
 - **lightning-dir** (string): Identifies where you can find the configuration and other related files
 - **blockheight** (u32): The highest block height we've learned
 - **network** (string): represents the type of network on the node are working (e.g: `bitcoin`, `testnet`, or `regtest`)
-- **fees_collected_msat** (msat): Total routing fees collected by this node
+- **fees\_collected\_msat** (msat): Total routing fees collected by this node
+- **our\_features** (object, optional): Our BOLT #9 feature bits (as hexstring) for various contexts:
+  - **init** (hex): features (incl. globalfeatures) in our init message, these also restrict what we offer in open_channel or accept in accept_channel
+  - **node** (hex): features in our node_announcement message
+  - **channel** (hex): negotiated channel features we (as channel initiator) publish in the channel_announcement message
+  - **invoice** (hex): features in our BOLT11 invoices
 - **address** (array of objects, optional): The addresses we announce to the world:
-  - **type** (string): Type of connection (one of "ipv4", "ipv6", "torv2", "torv3", "websocket")
+  - **type** (string): Type of connection (one of "dns", "ipv4", "ipv6", "torv2", "torv3", "websocket")
   - **port** (u16): port number
 
-  If **type** is "ipv4", "ipv6", "torv2" or "torv3":
+  If **type** is "dns", "ipv4", "ipv6", "torv2" or "torv3":
+
     - **address** (string): address in expected format for **type**
 - **binding** (array of objects, optional): The addresses we are listening on:
   - **type** (string): Type of connection (one of "local socket", "ipv4", "ipv6", "torv2", "torv3")
@@ -52,8 +59,9 @@ On success, an object is returned, containing:
   - **socket** (string, optional): socket filename (only if **type** is "local socket")
 
 The following warnings may also be returned:
-- **warning_bitcoind_sync**: Bitcoind is not up-to-date with network.
-- **warning_lightningd_sync**: Lightningd is still loading latest blocks from bitcoind.
+
+- **warning\_bitcoind\_sync**: Bitcoind is not up-to-date with network.
+- **warning\_lightningd\_sync**: Lightningd is still loading latest blocks from bitcoind.
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -91,12 +99,18 @@ EXAMPLE JSON RESPONSE
          "port": 9736
       }
    ],
-   "version": "0.9.0",
-   "blockheight": 644297,
+   "version": "v0.10.2",
+   "blockheight": 724302,
    "network": "bitcoin",
    "msatoshi_fees_collected": 0,
    "fees_collected_msat": "0msat",
    "lightning-dir": "/media/vincent/Maxtor/C-lightning/node/bitcoin"
+   "our_features": {
+      "init": "8828226aa2",
+      "node": "80008828226aa2",
+      "channel": "",
+      "invoice": "20024200"
+   }
 }
 
 ```
@@ -117,4 +131,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:50c41a77a5f440cc22e5df9e3748e4280cd4508469887382690c580f10bc5af4)
+[comment]: # ( SHA256STAMP:0e54af449933b833f2e74bab9fde46096a79d69b4d958a548c7c0b7cc5654e99)

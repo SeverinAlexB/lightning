@@ -1,9 +1,10 @@
 #ifndef LIGHTNING_BITCOIN_TX_H
 #define LIGHTNING_BITCOIN_TX_H
 #include "config.h"
-#include "shadouble.h"
-#include "signature.h"
-#include "varint.h"
+#include <bitcoin/chainparams.h>
+#include <bitcoin/shadouble.h>
+#include <bitcoin/signature.h>
+#include <bitcoin/varint.h>
 #include <ccan/structeq/structeq.h>
 #include <common/amount.h>
 #include <wally_transaction.h>
@@ -57,7 +58,7 @@ void wally_txid(const struct wally_tx *wtx, struct bitcoin_txid *txid);
 u8 *linearize_tx(const tal_t *ctx, const struct bitcoin_tx *tx);
 u8 *linearize_wtx(const tal_t *ctx, const struct wally_tx *wtx);
 
-/* Get weight of tx in Sipa. */
+/* Get weight of tx in Sipa; assumes it will have witnesses! */
 size_t bitcoin_tx_weight(const struct bitcoin_tx *tx);
 size_t wally_tx_weight(const struct wally_tx *wtx);
 
@@ -96,12 +97,8 @@ struct wally_tx_output *wally_tx_output(const tal_t *ctx,
 
 /* Add one output to tx. */
 int bitcoin_tx_add_output(struct bitcoin_tx *tx, const u8 *script,
-			  u8 *wscript,
+			  const u8 *wscript,
 			  struct amount_sat amount);
-
-/* Add mutiple output to tx. */
-int bitcoin_tx_add_multi_outputs(struct bitcoin_tx *tx,
-				 struct bitcoin_tx_output **outputs);
 
 /* Set the locktime for a transaction */
 void bitcoin_tx_set_locktime(struct bitcoin_tx *tx, u32 locktime);
@@ -118,7 +115,7 @@ int bitcoin_tx_add_input(struct bitcoin_tx *tx,
 			 struct amount_sat amount, const u8 *scriptPubkey,
 			 const u8 *input_wscript);
 
-/* This helps is useful because wally uses a raw byte array for txids */
+/* This is useful because wally uses a raw byte array for txids */
 bool wally_tx_input_spends(const struct wally_tx_input *input,
 			   const struct bitcoin_outpoint *outpoint);
 
@@ -187,13 +184,6 @@ void bitcoin_tx_input_set_witness(struct bitcoin_tx *tx, int innum,
 void bitcoin_tx_input_set_script(struct bitcoin_tx *tx, int innum, u8 *script);
 
 /**
- * Helper to get a witness as a tal_arr array.
- */
-const u8 *bitcoin_tx_input_get_witness(const tal_t *ctx,
-				       const struct bitcoin_tx *tx, int innum,
-				       int witnum);
-
-/**
  * Wrap the raw txhash in the wally_tx_input into a bitcoin_txid
  */
 void bitcoin_tx_input_get_outpoint(const struct bitcoin_tx *tx,
@@ -241,6 +231,36 @@ bool elements_wtx_output_is_fee(const struct wally_tx *tx, int outnum);
  */
 bool elements_tx_output_is_fee(const struct bitcoin_tx *tx, int outnum);
 
+/** Attempt to compute the elements overhead given a base bitcoin size.
+ *
+ * The overhead consists of 2 empty proofs for the transaction, 6 bytes of
+ * proofs per input and 35 bytes per output. In addition the explicit fee
+ * output will add 9 bytes and the per output overhead as well.
+ */
+static inline size_t elements_tx_overhead(const struct chainparams *chainparams,
+					  size_t incount, size_t outcount)
+{
+	size_t overhead;
+
+	if (!chainparams->is_elements)
+		return 0;
+
+	/* Each transaction has surjection and rangeproof (both empty
+	 * for us as long as we use unblinded L-BTC transactions). */
+	overhead = 2 * 4;
+	/* For elements we also need to add the fee output and the
+	 * overhead for rangeproofs into the mix. */
+	overhead += (8 + 1) * 4; /* Bitcoin style output */
+
+	/* All outputs have a bit of elements overhead (incl fee) */
+	overhead += (32 + 1 + 1 + 1) * 4 * (outcount + 1); /* Elements added fields */
+
+	/* Inputs have 6 bytes of blank proofs attached. */
+	overhead += 6 * incount;
+
+	return overhead;
+}
+
 /**
  * Calculate the fees for this transaction
  */
@@ -260,13 +280,8 @@ void fromwire_bitcoin_txid(const u8 **cursor, size_t *max,
 			   struct bitcoin_txid *txid);
 struct bitcoin_tx *fromwire_bitcoin_tx(const tal_t *ctx,
 				       const u8 **cursor, size_t *max);
-struct bitcoin_tx_output *fromwire_bitcoin_tx_output(const tal_t *ctx,
-						     const u8 **cursor, size_t *max);
-struct wally_tx *fromwire_wally_tx(const tal_t *ctx, const u8 **cursor, size_t *max);
 void towire_bitcoin_txid(u8 **pptr, const struct bitcoin_txid *txid);
 void towire_bitcoin_tx(u8 **pptr, const struct bitcoin_tx *tx);
-void towire_bitcoin_tx_output(u8 **pptr, const struct bitcoin_tx_output *output);
-void towire_wally_tx(u8 **pptr, const struct wally_tx *wtx);
 void towire_bitcoin_outpoint(u8 **pptr, const struct bitcoin_outpoint *outp);
 void fromwire_bitcoin_outpoint(const u8 **cursor, size_t *max,
 			       struct bitcoin_outpoint *outp);
@@ -286,6 +301,9 @@ size_t bitcoin_tx_simple_input_witness_weight(void);
 
 /* We only do segwit inputs, and we assume witness is sig + key  */
 size_t bitcoin_tx_simple_input_weight(bool p2sh);
+
+/* The witness for our 2of2 input (closing or commitment tx). */
+size_t bitcoin_tx_2of2_input_witness_weight(void);
 
 /**
  * change_amount - Is it worth making a P2WPKH change output at this feerate?

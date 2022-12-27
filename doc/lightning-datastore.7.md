@@ -10,16 +10,16 @@ DESCRIPTION
 -----------
 
 The **datastore** RPC command allows plugins to store data in the
-c-lightning database, for later retrieval.
+Core Lightning database, for later retrieval.
 
 *key* is an array of values (though a single value is treated as a
-one-element array), to form a heirarchy.  Using the first element of
+one-element array), to form a hierarchy.  Using the first element of
 the key as the plugin name (e.g. `[ "summary" ]`) is recommended.
 A key can either have children or a value, never both: parents are
 created and removed automatically.
 
-*mode* is one of "must-create" (default, fails it it already exists),
-"must-replace" (fails it it doesn't already exist),
+*mode* is one of "must-create" (default, fails if it already exists),
+"must-replace" (fails if it doesn't already exist),
 "create-or-replace" (never fails), "must-append" (must already exist,
 append this to what's already there) or "create-or-append" (append if
 anything is there, otherwise create).
@@ -34,6 +34,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **key** (array of strings):
   - Part of the key added to the datastore
 - **generation** (u64, optional): The number of times this has been updated
@@ -65,4 +66,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:fd53ebaf7190249460f62aa509010207dbdbc3ae3c90279f49d3c61d4a621c7d)
+[comment]: # ( SHA256STAMP:cb5bccd7efd8438c61b909bda419e0300993b2b2267cb335c1f91d12bd402b3e)

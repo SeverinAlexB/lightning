@@ -4,20 +4,20 @@ lightning-txprepare -- Command to prepare to withdraw funds from the internal wa
 SYNOPSIS
 --------
 
-**txprepare** *outputs* \[*feerate*\] \[*minconf*\] \[*utxos*\]
+**txprepare** *outputs* [*feerate*] [*minconf*] [*utxos*]
 
 DESCRIPTION
 -----------
 
 The **txprepare** RPC command creates an unsigned transaction which
-spends funds from c-lightning's internal wallet to the outputs specified
+spends funds from Core Lightning's internal wallet to the outputs specified
 in *outputs*.
 
 The *outputs* is the array of output that include *destination*
 and *amount*(\{*destination*: *amount*\}). Its format is like:
-\[\{address1: amount1\}, \{address2: amount2\}\]
+[\{address1: amount1\}, \{address2: amount2\}]
 or
-\[\{address: *all*\}\].
+[\{address: *all*\}].
 It supports any number of **confirmed** outputs.
 
 The *destination* of output is the address which can be of any Bitcoin accepted
@@ -54,8 +54,9 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **psbt** (string): the PSBT representing the unsigned transaction
-- **unsigned_tx** (hex): the unsigned transaction
+- **unsigned\_tx** (hex): the unsigned transaction
 - **txid** (txid): the transaction id of *unsigned_tx*; you hand this to lightning-txsend(7) or lightning-txdiscard(7), as the inputs of this transaction are reserved.
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -84,4 +85,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:3b18b65b58bce0ce6fcacd49d86b6da2b59828c4b3474d1de0f6ab76d810044c)
+[comment]: # ( SHA256STAMP:c13561bf71189143811cd4bd49db69c163b8443f1660931671eb1e95e0a7e3ff)

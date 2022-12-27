@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/preimage.h>
 #include <bitcoin/script.h>
 #include <common/htlc_tx.h>
@@ -51,8 +52,9 @@ static struct bitcoin_tx *htlc_tx(const tal_t *ctx,
 
 	/* BOLT #3:
 	 * * txout count: 1
-	 *    * `txout[0]` amount: the HTLC amount minus fees
-	 *       (see [Fee Calculation](#fee-calculation))
+	 *    * `txout[0]` amount: the HTLC `amount_msat` divided by 1000
+	 *      (rounding down) minus fees in satoshis (see
+	 *      [Fee Calculation](#fee-calculation))
 	 *    * `txout[0]` script: version-0 P2WSH with witness script as shown
 	 *       below
 	 */
@@ -61,7 +63,7 @@ static struct bitcoin_tx *htlc_tx(const tal_t *ctx,
 
 	wscript = bitcoin_wscript_htlc_tx(tx, to_self_delay, revocation_pubkey,
 					  local_delayedkey);
-	bitcoin_tx_add_output(tx, scriptpubkey_p2wsh(tx, wscript),
+	bitcoin_tx_add_output(tx, scriptpubkey_p2wsh(tmpctx, wscript),
 			      wscript, amount);
 
 	bitcoin_tx_finalize(tx);

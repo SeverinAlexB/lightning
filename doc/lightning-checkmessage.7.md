@@ -4,7 +4,7 @@ lightning-checkmessage -- Command to check if a signature is from a node
 SYNOPSIS
 --------
 
-**checkmessage** *message* *zbase* \[*pubkey*\]
+**checkmessage** *message* *zbase* [*pubkey*]
 
 DESCRIPTION
 -----------
@@ -20,18 +20,18 @@ known node key (as per *listnodes*), and verification succeeds if it
 matches for any one of them.  Note: this is implemented far more
 efficiently than trying each one, so performance is not a concern.
 
+On failure, an error is returned and core lightning exit with the following error code:
+- -32602: Parameter missed or malformed;
+- 1301: *pubkey* not found in the graph.
+
 RETURN VALUE
 ------------
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **verified** (boolean): Whether the signature was valid
 
-If **verified** is *true*:
-  - **pubkey** (pubkey): the *pubkey* parameter, or the pubkey found by looking for known nodes
-
-If **verified** is *false*:
-  - **pubkey** (pubkey): the *pubkey* (if any) which could have signed this; this is usually not useful!
+- **verified** (boolean): whether the signature was valid (always *true*)
+- **pubkey** (pubkey): the *pubkey* parameter, or the pubkey found by looking for known nodes
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -50,4 +50,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:eb1ea64cb5e8e16e8e7214f38184b60f2c30d8e7f68db1623fabda665bf1fdec)
+[comment]: # ( SHA256STAMP:28b7c05443a785461a0134e3c2761a2e2d698cb71044f4d895d15ac7f2ee4316)

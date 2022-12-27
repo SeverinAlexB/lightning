@@ -1,3 +1,4 @@
+#include "config.h"
 #include <ccan/array_size/array_size.h>
 #include <ccan/crypto/siphash24/siphash24.h>
 #include <ccan/htable/htable_type.h>
@@ -5,8 +6,8 @@
 #include <ccan/tal/str/str.h>
 #include <common/dijkstra.h>
 #include <common/gossmap.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
 #include <common/memleak.h>
 #include <common/pseudorand.h>
 #include <common/route.h>
@@ -29,19 +30,6 @@ static struct gossmap *get_gossmap(void)
 
 /* Convenience global since route_score_fuzz doesn't take args. 0 to 1. */
 static double fuzz;
-
-enum exclude_entry_type {
-	EXCLUDE_CHANNEL = 1,
-	EXCLUDE_NODE = 2
-};
-
-struct exclude_entry {
-	enum exclude_entry_type type;
-	union {
-		struct short_channel_id_dir chan_id;
-		struct node_id node_id;
-	} u;
-};
 
 /* Prioritize costs over distance, but with fuzz.  Cost must be
  * the same when the same channel queried, so we base it on that. */
@@ -68,7 +56,7 @@ static bool can_carry(const struct gossmap *map,
 		      const struct gossmap_chan *c,
 		      int dir,
 		      struct amount_msat amount,
-		      const struct exclude_entry **excludes)
+		      struct route_exclusion **excludes)
 {
 	struct node_id dstid;
 
@@ -106,21 +94,6 @@ static bool can_carry(const struct gossmap *map,
 	return true;
 }
 
-static void json_add_route_hop_style(struct json_stream *response,
-				     const char *fieldname,
-				     enum route_hop_style style)
-{
-	switch (style) {
-	case ROUTE_HOP_LEGACY:
-		json_add_string(response, fieldname, "legacy");
-		return;
-	case ROUTE_HOP_TLV:
-		json_add_string(response, fieldname, "tlv");
-		return;
-	}
-	abort();
-}
-
 /* Output a route hop */
 static void json_add_route_hop(struct json_stream *js,
 			       const char *fieldname,
@@ -133,7 +106,7 @@ static void json_add_route_hop(struct json_stream *js,
 	json_add_num(js, "direction", r->direction);
 	json_add_amount_msat_compat(js, r->amount, "msatoshi", "amount_msat");
 	json_add_num(js, "delay", r->delay);
-	json_add_route_hop_style(js, "style", r->style);
+	json_add_string(js, "style", "tlv");
 	json_object_end(js);
 }
 
@@ -143,12 +116,11 @@ static struct command_result *json_getroute(struct command *cmd,
 {
 	struct node_id *destination;
 	struct node_id *source;
-	const jsmntok_t *excludetok;
 	struct amount_msat *msat;
 	u32 *cltv;
 	/* risk factor 12.345% -> riskfactor_millionths = 12345000 */
 	u64 *riskfactor_millionths, *fuzz_millionths;
-	const struct exclude_entry **excluded;
+	struct route_exclusion **excluded;
 	u32 *max_hops;
 	const struct dijkstra *dij;
 	struct route_hop *route;
@@ -158,13 +130,13 @@ static struct command_result *json_getroute(struct command *cmd,
 
 	if (!param(cmd, buffer, params,
 		   p_req("id", param_node_id, &destination),
-		   p_req("msatoshi", param_msat, &msat),
+		   p_req("amount_msat|msatoshi", param_msat, &msat),
 		   p_req("riskfactor", param_millionths, &riskfactor_millionths),
 		   p_opt_def("cltv", param_number, &cltv, 9),
 		   p_opt_def("fromid", param_node_id, &source, local_id),
 		   p_opt_def("fuzzpercent", param_millionths, &fuzz_millionths,
 			     5000000),
-		   p_opt("exclude", param_array, &excludetok),
+		   p_opt("exclude", param_route_exclusion_array, &excluded),
 		   p_opt_def("maxhops", param_number, &max_hops, ROUTING_MAX_HOPS),
 		   NULL))
 		return command_param_failed();
@@ -175,38 +147,6 @@ static struct command_result *json_getroute(struct command *cmd,
 		return command_fail_badparam(cmd, "fuzzpercent",
 					     buffer, params,
 					     "should be <= 100");
-
-	if (excludetok) {
-		const jsmntok_t *t;
-		size_t i;
-
-		excluded = tal_arr(cmd, const struct exclude_entry *, 0);
-
-		json_for_each_arr(i, t, excludetok) {
-			struct exclude_entry *entry = tal(excluded, struct exclude_entry);
-			struct short_channel_id_dir *chan_id = tal(tmpctx, struct short_channel_id_dir);
-			if (!short_channel_id_dir_from_str(buffer + t->start,
-							   t->end - t->start,
-							   chan_id)) {
-				struct node_id *node_id = tal(tmpctx, struct node_id);
-
-				if (!json_to_node_id(buffer, t, node_id))
-					return command_fail_badparam(cmd, "exclude",
-								     buffer, t,
-								     "should be short_channel_id or node_id");
-
-				entry->type = EXCLUDE_NODE;
-				entry->u.node_id = *node_id;
-			} else {
-				entry->type = EXCLUDE_CHANNEL;
-				entry->u.chan_id = *chan_id;
-			}
-
-			tal_arr_expand(&excluded, entry);
-		}
-	} else {
-		excluded = NULL;
-	}
 
 	gossmap = get_gossmap();
 	src = gossmap_find_node(gossmap, source);
@@ -340,21 +280,8 @@ static void json_add_halfchan(struct json_stream *response,
 		json_add_num(response, "delay", c->half[dir].delay);
 		json_add_amount_msat_only(response, "htlc_minimum_msat",
 					  htlc_minimum_msat);
-
-		/* We used to always print this, but that's weird */
-		if (deprecated_apis && !(message_flags & 1)) {
-			if (!amount_sat_to_msat(&htlc_maximum_msat, capacity))
-				plugin_err(plugin,
-					   "Channel with impossible capacity %s",
-					   type_to_string(tmpctx,
-							  struct amount_sat,
-							  &capacity));
-			message_flags = 1;
-		}
-
-		if (message_flags & 1)
-			json_add_amount_msat_only(response, "htlc_maximum_msat",
-						  htlc_maximum_msat);
+		json_add_amount_msat_only(response, "htlc_maximum_msat",
+					  htlc_maximum_msat);
 		json_add_hex_talarr(response, "features", chanfeatures);
 		json_object_end(response);
 	}
@@ -520,7 +447,6 @@ static void json_add_node(struct json_stream *js,
 		struct json_escape *esc;
 		struct tlv_node_ann_tlvs *na_tlvs;
 
-		na_tlvs = tlv_node_ann_tlvs_new(tmpctx);
 		if (!fromwire_node_announcement(nannounce, nannounce,
 						&signature,
 						&features,
@@ -529,7 +455,7 @@ static void json_add_node(struct json_stream *js,
 						rgb_color,
 						alias,
 						&addresses,
-						na_tlvs)) {
+						&na_tlvs)) {
 			plugin_log(plugin, LOG_BROKEN,
 				   "Cannot parse stored node_announcement"
 				   " for %s at %u: %s",
@@ -603,12 +529,12 @@ static struct command_result *json_listnodes(struct command *cmd,
 }
 
 /* What is capacity of peer attached to chan #n? */
-static struct amount_sat peer_capacity(const struct gossmap *gossmap,
+static struct amount_msat peer_capacity(const struct gossmap *gossmap,
 				       const struct gossmap_node *me,
 				       const struct gossmap_node *peer,
 				       const struct gossmap_chan *ourchan)
 {
-	struct amount_sat capacity = AMOUNT_SAT(0);
+	struct amount_msat capacity = AMOUNT_MSAT(0);
 
 	for (size_t i = 0; i < peer->num_chans; i++) {
 		int dir;
@@ -618,9 +544,9 @@ static struct amount_sat peer_capacity(const struct gossmap *gossmap,
 			continue;
 		if (!c->half[!dir].enabled)
 			continue;
-		if (!amount_sat_add(&capacity, capacity,
-				    amount_sat(fp16_to_u64(c->half[dir]
-							   .htlc_max))))
+		if (!amount_msat_add(
+			&capacity, capacity,
+			amount_msat(fp16_to_u64(c->half[!dir].htlc_max))))
 			continue;
 	}
 	return capacity;
@@ -651,6 +577,7 @@ static struct command_result *json_listincoming(struct command *cmd,
 		struct gossmap_chan *ourchan;
 		struct gossmap_node *peer;
 		struct short_channel_id scid;
+		const u8 *peer_features;
 
 		ourchan = gossmap_nth_chan(gossmap, me, i, &dir);
 		/* If its half is disabled, ignore. */
@@ -667,12 +594,22 @@ static struct command_result *json_listincoming(struct command *cmd,
 		json_add_amount_msat_only(js, "fee_base_msat",
 					  amount_msat(ourchan->half[!dir]
 						      .base_fee));
+		json_add_amount_msat_only(js, "htlc_min_msat",
+					  amount_msat(fp16_to_u64(ourchan->half[!dir]
+								  .htlc_min)));
+		json_add_amount_msat_only(js, "htlc_max_msat",
+					  amount_msat(fp16_to_u64(ourchan->half[!dir]
+								  .htlc_max)));
 		json_add_u32(js, "fee_proportional_millionths",
 			     ourchan->half[!dir].proportional_fee);
 		json_add_u32(js, "cltv_expiry_delta", ourchan->half[!dir].delay);
-		json_add_amount_sat_only(js, "incoming_capacity_msat",
+		json_add_amount_msat_only(js, "incoming_capacity_msat",
 					 peer_capacity(gossmap,
 						       me, peer, ourchan));
+		json_add_bool(js, "public", !ourchan->private);
+		peer_features = gossmap_node_get_features(tmpctx, gossmap, peer);
+		if (peer_features)
+			json_add_hex_talarr(js, "peer_features", peer_features);
 		json_object_end(js);
 	}
 done:
@@ -684,8 +621,7 @@ done:
 #if DEVELOPER
 static void memleak_mark(struct plugin *p, struct htable *memtable)
 {
-	memleak_remove_region(memtable, global_gossmap,
-			      tal_bytelen(global_gossmap));
+	memleak_scan_obj(memtable, global_gossmap);
 }
 #endif
 

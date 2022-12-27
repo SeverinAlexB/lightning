@@ -4,7 +4,7 @@ lightning-check -- Command for verifying parameters
 SYNOPSIS
 --------
 
-**check** *command\_to\_check* \[*parameters*\]
+**check** *command\_to\_check* [*parameters*]
 
 DESCRIPTION
 -----------
@@ -25,7 +25,8 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **command_to_check** (string): the *command_to_check* argument
+
+- **command\_to\_check** (string): the *command_to_check* argument
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -40,4 +41,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:47419eb2a6d8d83866773a49170f6fa6047de01435d602fa08487c59d87fb93c)
+[comment]: # ( SHA256STAMP:22c1ad9baf37cb8c7c4b587047d40ef23f0af3d821feaf1aab6d365d724b08fe)

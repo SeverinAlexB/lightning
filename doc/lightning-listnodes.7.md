@@ -4,7 +4,7 @@ lightning-listnodes -- Command to get the list of nodes in the known network.
 SYNOPSIS
 --------
 
-**listnodes** \[id\]
+**listnodes** [*id*]
 
 DESCRIPTION
 -----------
@@ -28,33 +28,37 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **nodes** is returned.  It is an array of objects, where each object contains:
-- **nodeid** (pubkey): the public key of the node
-- **last_timestamp** (u32, optional): A node_announcement has been received for this node (UNIX timestamp)
 
-If **last_timestamp** is present:
+- **nodeid** (pubkey): the public key of the node
+- **last\_timestamp** (u32, optional): A node_announcement has been received for this node (UNIX timestamp)
+
+If **last\_timestamp** is present:
+
   - **alias** (string): The fun alias this node advertized (up to 32 characters)
   - **color** (hex): The favorite RGB color this node advertized (always 6 characters)
   - **features** (hex): BOLT #9 features bitmap this node advertized
   - **addresses** (array of objects): The addresses this node advertized:
-    - **type** (string): Type of connection (one of "ipv4", "ipv6", "torv2", "torv3", "websocket")
+    - **type** (string): Type of connection (one of "dns", "ipv4", "ipv6", "torv2", "torv3", "websocket")
     - **port** (u16): port number
 
-    If **type** is "ipv4", "ipv6", "torv2" or "torv3":
+    If **type** is "dns", "ipv4", "ipv6", "torv2" or "torv3":
+
       - **address** (string): address in expected format for **type**
 
-If **option_will_fund** is present:
-  - **option_will_fund** (object):
-    - **lease_fee_base_msat** (msat): the fixed fee for a lease (whole number of satoshis)
-    - **lease_fee_basis** (u32): the proportional fee in basis points (parts per 10,000) for a lease
-    - **funding_weight** (u32): the onchain weight you'll have to pay for a lease
-    - **channel_fee_max_base_msat** (msat): the maximum base routing fee this node will charge during the lease
-    - **channel_fee_max_proportional_thousandths** (u32): the maximum proportional routing fee this node will charge during the lease (in thousandths, not millionths like channel_update)
-    - **compact_lease** (hex): the lease as represented in the node_announcement
+If **option\_will\_fund** is present:
+
+  - **option\_will\_fund** (object):
+    - **lease\_fee\_base\_msat** (msat): the fixed fee for a lease (whole number of satoshis)
+    - **lease\_fee\_basis** (u32): the proportional fee in basis points (parts per 10,000) for a lease
+    - **funding\_weight** (u32): the onchain weight you'll have to pay for a lease
+    - **channel\_fee\_max\_base\_msat** (msat): the maximum base routing fee this node will charge during the lease
+    - **channel\_fee\_max\_proportional\_thousandths** (u32): the maximum proportional routing fee this node will charge during the lease (in thousandths, not millionths like channel_update)
+    - **compact\_lease** (hex): the lease as represented in the node_announcement
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
-  
+
 On failure, one of the following error codes may be returned:
- 
+
 - -32602: Error in given parameters.
 
 EXAMPLE JSON RESPONSE
@@ -89,10 +93,10 @@ Vincenzo Palazzo <<vincenzo.palazzo@protonmail.com>> wrote the initial version o
 SEE ALSO
 --------
 
-FIXME: 
+FIXME:
 
 RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:f9e1f4655b416c5e60279cf11a832bc4c652f503e48095dc3cf39deee5f0c769)
+[comment]: # ( SHA256STAMP:7f1378c1376ade1c9912c8eef3ebc77b13cbc5194ee813f8f1b4e0061338e0bb)

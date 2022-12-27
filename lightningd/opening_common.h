@@ -28,7 +28,7 @@ struct uncommitted_channel {
 	/* Reserved dbid for if we become a real struct channel */
 	u64 dbid;
 
-	/* Channel id, v2 opens only */
+	/* Channel id (temporary!) */
 	struct channel_id cid;
 
 	/* For logging */
@@ -58,6 +58,12 @@ struct uncommitted_channel {
 
 	/* Our channel config. */
 	struct channel_config our_config;
+
+	/* Reserve we will impose on the other side. If this is NULL
+	 * we will use our default of 1% of the funding
+	 * amount. Otherwise it will be used by openingd as absolute
+	 * value (clamped to dust limit). */
+	struct amount_sat *reserve;
 };
 
 struct funding_channel {
@@ -66,6 +72,7 @@ struct funding_channel {
 	struct wallet_tx *wtx;
 	struct amount_msat push;
 	struct amount_sat funding_sats;
+
 	u8 channel_flags;
 	const u8 *our_upfront_shutdown_script;
 
@@ -87,19 +94,21 @@ struct funding_channel {
 	/* Whether or not this is in the middle of getting funded */
 	bool inflight;
 
+	/* Initial openingd_funder_start msg */
+	const u8 *open_msg;
+
 	/* Any commands trying to cancel us. */
 	struct command **cancels;
 
 	/* Place to stash the per-peer-state while we wait
 	 * for them to get back to us with signatures */
-	struct per_peer_state *pps;
+	struct peer_fd *peer_fd;
 };
 
-struct uncommitted_channel *
-new_uncommitted_channel(struct peer *peer);
+struct uncommitted_channel *new_uncommitted_channel(struct peer *peer);
 
 void opend_channel_errmsg(struct uncommitted_channel *uc,
-			  struct per_peer_state *pps,
+			  struct peer_fd *peer_fd,
 			  const struct channel_id *channel_id UNUSED,
 			  const char *desc,
 			  bool warning UNUSED,
@@ -120,17 +129,5 @@ void channel_config(struct lightningd *ld,
 		    struct channel_config *ours,
 		    u32 *max_to_self_delay,
 		    struct amount_msat *min_effective_htlc_capacity);
-
-void handle_reestablish(struct lightningd *ld,
-			const struct node_id *peer_id,
-			const struct channel_id *channel_id,
-			const u8 *reestablish,
-			struct per_peer_state *pps);
-
-#if DEVELOPER
-struct command;
-/* Calls report_leak_info() async. */
-void opening_dev_memleak(struct command *cmd);
-#endif
 
 #endif /* LIGHTNING_LIGHTNINGD_OPENING_COMMON_H */

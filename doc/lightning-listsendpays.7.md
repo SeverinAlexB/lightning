@@ -4,7 +4,7 @@ lightning-listsendpays -- Low-level command for querying sendpay status
 SYNOPSIS
 --------
 
-**listsendpays** \[*bolt11*\] \[*payment\_hash*\] \[*status*\]
+**listsendpays** [*bolt11*] [*payment\_hash*] [*status*]
 
 DESCRIPTION
 -----------
@@ -24,22 +24,26 @@ Note that the returned array is ordered by increasing *id*.
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **payments** is returned.  It is an array of objects, where each object contains:
+
 - **id** (u64): unique ID for this payment attempt
-- **payment_hash** (hex): the hash of the *payment_preimage* which will prove payment (always 64 characters)
+- **groupid** (u64): Grouping key to disambiguate multiple attempts to pay an invoice or the same payment_hash
+- **payment\_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
 - **status** (string): status of the payment (one of "pending", "failed", "complete")
-- **created_at** (u64): the UNIX timestamp showing when this payment was initiated
-- **amount_sent_msat** (msat): The amount sent
-- **groupid** (u64, optional): Grouping key to disambiguate multiple attempts to pay an invoice or the same payment_hash
-- **amount_msat** (msat, optional): The amount delivered to destination (if known)
+- **created\_at** (u64): the UNIX timestamp showing when this payment was initiated
+- **amount\_sent\_msat** (msat): The amount sent
+- **amount\_msat** (msat, optional): The amount delivered to destination (if known)
 - **destination** (pubkey, optional): the final destination of the payment if known
 - **label** (string, optional): the label, if given to sendpay
 - **bolt11** (string, optional): the bolt11 string (if pay supplied one)
+- **description** (string, optional): the description matching the bolt11 description hash (if pay supplied one)
 - **bolt12** (string, optional): the bolt12 string (if supplied for pay: **experimental-offers** only).
 
 If **status** is "complete":
-  - **payment_preimage** (hex): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
+
+  - **payment\_preimage** (secret): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
 
 If **status** is "failed":
+
   - **erroronion** (hex, optional): the onion message returned
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -60,4 +64,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:4a3ec9bd1d5b1959856d3822245e94793712d23f82f5909a415125810bdcd538)
+[comment]: # ( SHA256STAMP:eddbf227775b367fbea5d90dfc1d06bc87b9301e4b862b0d755592432ef58f89)
